@@ -10,8 +10,7 @@
   "types": "./dist/server.d.ts",
   "files": [
     "dist",
-    "README.md",
-    "LICENSE"
+    "README.md"
   ],
   "scripts": {
     "build": "tsc",
@@ -28,7 +27,6 @@
     "copilot"
   ],
   "author": "Wunder",
-  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/wunderio/wdrmcp.git"
