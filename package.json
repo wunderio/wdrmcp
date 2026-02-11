@@ -1,0 +1,50 @@
+{
+  "name": "@wunderio/wdrmcp",
+  "version": "0.1.0",
+  "description": "A generic MCP server that dynamically loads tool definitions from YAML configuration files and executes them in Docker containers or proxies them to remote MCP servers.",
+  "type": "module",
+  "bin": {
+    "wdrmcp": "./dist/index.js"
+  },
+  "main": "./dist/server.js",
+  "types": "./dist/server.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "docker",
+    "ddev",
+    "ai-tools",
+    "copilot"
+  ],
+  "author": "Wunder",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wunderio/wdrmcp.git"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "js-yaml": "^4.1.0",
+    "zod": "^3.25.0",
+    "glob": "^11.0.0"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}
