@@ -4,7 +4,7 @@
   "description": "A generic MCP server that dynamically loads tool definitions from YAML configuration files and executes them in Docker containers or proxies them to remote MCP servers.",
   "type": "module",
   "bin": {
-    "wdrmcp": "./dist/index.js"
+    "wdrmcp": "dist/index.js"
   },
   "main": "./dist/server.js",
   "types": "./dist/server.d.ts",
@@ -31,7 +31,7 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/wunderio/wdrmcp.git"
+    "url": "git+https://github.com/wunderio/wdrmcp.git"
   },
   "engines": {
     "node": ">=18.0.0"
