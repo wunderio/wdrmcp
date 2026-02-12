@@ -131,12 +131,30 @@ export async function dockerExec(options: DockerExecOptions): Promise<string> {
 
 /**
  * Async wrapper around child_process.execFile.
+ * Wraps docker commands with 'sg docker -c' to ensure docker group access.
  */
 function execCommand(cmd: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
+    let finalCmd = cmd;
+    let finalArgs = args;
+    
+    // Wrap docker commands with sg to activate docker group
+    if (cmd === "docker") {
+      finalCmd = "sg";
+      // Build the full docker command and properly quote arguments
+      const dockerCmd = [cmd, ...args].map(arg => {
+        // Quote arguments that contain spaces or special chars
+        if (arg.includes(' ') || arg.includes('"') || arg.includes("'")) {
+          return `'${arg.replace(/'/g, "'\\''")}'`;
+        }
+        return arg;
+      }).join(' ');
+      finalArgs = ["docker", "-c", dockerCmd];
+    }
+    
     execFile(
-      cmd,
-      args,
+      finalCmd,
+      finalArgs,
       { maxBuffer: 10 * 1024 * 1024, timeout: 120_000 },
       (error, stdout, stderr) => {
         if (error) {
