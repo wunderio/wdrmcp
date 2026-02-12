@@ -34,12 +34,13 @@ export interface JsonSchemaProperty {
   default?: unknown;
 }
 
-/** Configuration for a command-type tool (docker exec). */
+/** Configuration for a command-type tool (SSH execution). */
 export interface CommandToolConfig extends BaseToolConfig {
   type: "command";
   command_template: string;
-  container: string;
-  user?: string;
+  ssh_target: string;  // e.g. "web" or "{DDEV_PROJECT}.ddev.site"
+  ssh_user?: string;   // e.g. "${DDEV_SSH_USER}", defaults to current user
+  working_dir?: string; // Optional working directory for execution
   shell?: string;
   default_args?: Record<string, string>;
   disallowed_commands?: string[];
@@ -110,4 +111,17 @@ export interface BridgeConfig {
   hostProjectRoot: string;
   /** Container project root for path normalization. */
   containerProjectRoot: string;
+  /** SSH user for container connections (defaults to current user). */
+  sshUser?: string;
+}
+
+/** Interface for executing commands via SSH. */
+export interface ContainerExecutor {
+  execute(options: {
+    host: string;        // SSH hostname/target
+    command: string[];
+    user?: string;
+    shell?: string;
+    workingDir?: string;
+  }): Promise<string>;
 }

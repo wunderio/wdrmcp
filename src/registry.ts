@@ -13,6 +13,8 @@ import { resolve, join } from "node:path";
 import { globSync } from "glob";
 import yaml from "js-yaml";
 import { getLogger } from "./logger.js";
+import { resolveEnvVars } from "./env-resolve.js";
+import { SshExecutor } from "./executors/ssh.js";
 import { CommandToolExecutor } from "./executors/command.js";
 import { McpProxyExecutor, BoundRemoteToolExecutor } from "./executors/mcp-proxy.js";
 import type {
@@ -25,6 +27,7 @@ import type {
   ArgPreprocessor,
   CommandToolConfig,
   McpServerToolConfig,
+  ContainerExecutor
 } from "./types.js";
 
 export class ToolRegistry {
@@ -32,10 +35,15 @@ export class ToolRegistry {
   private readonly config: BridgeConfig;
   private readonly tools: Map<string, RegisteredTool> = new Map();
   private readonly argPreprocessor: ArgPreprocessor;
+  private readonly containerExecutor: ContainerExecutor;
 
   constructor(toolsConfigDir: string, config: BridgeConfig) {
     this.toolsConfigDir = resolve(toolsConfigDir);
     this.config = config;
+
+    // Initialize standard container executor (now SSH based)
+    // Pass the configured SSH user or fall back to environment
+    this.containerExecutor = new SshExecutor(config.sshUser);
 
     // Path normalization as a composable preprocessor.
     // Converts devcontainer paths (e.g. /workspace/...) to container paths (/var/www/html/...).
@@ -154,12 +162,6 @@ export class ToolRegistry {
     }
   }
 
-  private interpolateContainerName(container: string): string {
-    return container?.includes("{DDEV_PROJECT}")
-      ? container.replace(/\{DDEV_PROJECT\}/g, this.config.ddevProject)
-      : container;
-  }
-
   private createExecutor(toolConfig: ToolConfig): ToolExecutor | null {
     const log = getLogger();
     const type = toolConfig.type ?? "command";
@@ -169,13 +171,22 @@ export class ToolRegistry {
       if (type === "command") {
         const cfg = toolConfig as CommandToolConfig;
         if (!cfg.command_template) { log.error(`Tool ${name}: missing command_template`); return null; }
+        if (!cfg.ssh_target) { log.error(`Tool ${name}: missing ssh_target`); return null; }
+
+        // Resolve environment variables and bridge placeholders
+        const sshTarget = resolveEnvVars(cfg.ssh_target, process.env as Record<string, string>, {
+          DDEV_PROJECT: this.config.ddevProject,
+        });
+        const sshUser = cfg.ssh_user ? resolveEnvVars(cfg.ssh_user) : undefined;
+        const workingDir = cfg.working_dir ? resolveEnvVars(cfg.working_dir) : undefined;
 
         return new CommandToolExecutor({
           commandTemplate: cfg.command_template,
-          container: this.interpolateContainerName(cfg.container),
-          ddevProject: this.config.ddevProject,
-          user: cfg.user,
+          host: sshTarget,
+          executor: this.containerExecutor, // Inject SSH executor
+          sshUser,
           shell: cfg.shell,
+          workingDir,
           defaultArgs: cfg.default_args,
           disallowedCommands: cfg.disallowed_commands,
           validationRules: cfg.validation_rules,

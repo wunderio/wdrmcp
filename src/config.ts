@@ -18,6 +18,7 @@ Environment variables:
   DDEV_PROJECT            DDEV project name (default: "default-project")
   HOST_PROJECT_ROOT       Host filesystem project root (default: /workspace)
   CONTAINER_PROJECT_ROOT  Container filesystem project root (default: /var/www/html)
+  SSH_USER                SSH user for container connections (default: $USER)
 `);
 }
 
@@ -63,5 +64,6 @@ export function parseArgs(argv: string[]): BridgeConfig {
     hostProjectRoot: process.env.HOST_PROJECT_ROOT ?? "/workspace",
     containerProjectRoot:
       process.env.CONTAINER_PROJECT_ROOT ?? "/var/www/html",
+    sshUser: process.env.SSH_USER ?? process.env.USER,
   };
 }

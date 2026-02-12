@@ -1,29 +1,18 @@
 /**
- * CommandToolExecutor — executes shell commands in Docker containers
+ * CommandToolExecutor — executes shell commands via SSH
  * with argument substitution ({placeholder} syntax).
- *
- * Refactored from the Python version with these improvements:
- *  - Static safety checks happen at construction time (not per-call)
- *  - Container validation and UID resolution are cached in docker.ts
- *  - Path normalization is an external preprocessor (not baked in)
- *  - No abstract base class; implements ToolExecutor interface directly
  */
 
-import {
-  dockerExec,
-  validateContainer,
-  validateStaticSafety,
-  resolveContainerUser,
-} from "../docker.js";
 import { getLogger } from "../logger.js";
-import type { ToolExecutionResult, ToolExecutor, ValidationRule } from "../types.js";
+import type { ToolExecutionResult, ToolExecutor, ValidationRule, ContainerExecutor } from "../types.js";
 
 export interface CommandExecutorOptions {
   commandTemplate: string;
-  container: string;
-  ddevProject: string;
-  user?: string;
+  host: string;  // SSH target hostname
+  executor: ContainerExecutor; // Dependency injection
+  sshUser?: string;
   shell?: string;
+  workingDir?: string;
   defaultArgs?: Record<string, string>;
   disallowedCommands?: string[];
   validationRules?: ValidationRule[];
@@ -31,33 +20,29 @@ export interface CommandExecutorOptions {
 
 export class CommandToolExecutor implements ToolExecutor {
   private readonly commandTemplate: string;
-  private readonly container: string;
-  private readonly ddevProject: string;
-  private readonly user: string;
+  private readonly host: string;
+  private readonly executor: ContainerExecutor;
+  private readonly sshUser?: string;
   private readonly shell: string;
+  private readonly workingDir?: string;
   private readonly defaultArgs: Record<string, string>;
   private readonly disallowedCommands: Set<string>;
   private readonly validationRules: ValidationRule[];
 
   constructor(options: CommandExecutorOptions) {
     this.commandTemplate = options.commandTemplate;
-    this.container = options.container;
-    this.ddevProject = options.ddevProject;
-    this.user = options.user ?? "www-data";
+    this.host = options.host;
+    this.executor = options.executor;
+    this.sshUser = options.sshUser;
     this.shell = options.shell ?? "/bin/bash";
+    this.workingDir = options.workingDir;
     this.defaultArgs = options.defaultArgs ?? {};
     this.disallowedCommands = new Set(options.disallowedCommands ?? []);
     this.validationRules = options.validationRules ?? [];
-
-    // Static safety: validate shell and flag at construction, not per-call.
-    validateStaticSafety([this.shell, "-c"]);
   }
 
   async execute(args: Record<string, unknown>): Promise<ToolExecutionResult> {
     const log = getLogger();
-
-    // Resolve user (cached after first call).
-    const user = await resolveContainerUser(this.user, this.container);
 
     // Merge with defaults.
     const mergedArgs: Record<string, unknown> = { ...this.defaultArgs, ...args };
@@ -85,21 +70,15 @@ export class CommandToolExecutor implements ToolExecutor {
       return { content: `Validation error: ${ruleError}`, isError: true };
     }
 
-    // Validate container ownership (cached after first call).
+    // Execute via injected executor (SSH or other).
     try {
-      await validateContainer(this.container, this.ddevProject);
-    } catch (e) {
-      log.warn(`Container validation: ${(e as Error).message}`);
-    }
-
-    // Execute in Docker container.
-    try {
-      log.info(`EXEC: ${this.container} as ${user}: ${this.shell} -c ...`);
-      const output = await dockerExec({
-        container: this.container,
+      log.info(`EXEC: ${this.host} via ${this.executor.constructor.name}`);
+      const output = await this.executor.execute({
+        host: this.host,
         command: [cmdStr],
-        user,
+        user: this.sshUser,
         shell: this.shell,
+        workingDir: this.workingDir,
       });
       return { content: output.trim() };
     } catch (e) {
