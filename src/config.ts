@@ -2,7 +2,23 @@
  * CLI argument parsing and configuration loading.
  */
 
+import { existsSync, readFileSync } from "node:fs";
 import type { BridgeConfig } from "./types.js";
+
+const DEFAULT_SSH_USER_FILE = "/workspace/.ddev/.agents/.env";
+
+function readSshUserFromFile(filePath: string): string | undefined {
+  if (!existsSync(filePath)) {
+    return undefined;
+  }
+
+  const raw = readFileSync(filePath, "utf-8").trim();
+  if (!raw) {
+    return undefined;
+  }
+
+  return raw;
+}
 
 function printUsage(): void {
   console.error(`
@@ -18,7 +34,9 @@ Environment variables:
   DDEV_PROJECT            DDEV project name (default: "default-project")
   HOST_PROJECT_ROOT       Host filesystem project root (default: /workspace)
   CONTAINER_PROJECT_ROOT  Container filesystem project root (default: /var/www/html)
-  SSH_USER                SSH user for container connections (default: $USER)
+  DDEV_SSH_USER           SSH user for container connections (preferred)
+  DDEV_SSH_USER_FILE      Path to a file containing SSH user (fallback)
+  SSH_USER                SSH user for container connections (fallback, default: $USER)
 `);
 }
 
@@ -56,6 +74,10 @@ export function parseArgs(argv: string[]): BridgeConfig {
     process.exit(1);
   }
 
+  const sshUserFile =
+    process.env.DDEV_SSH_USER_FILE ?? DEFAULT_SSH_USER_FILE;
+  const sshUserFromFile = readSshUserFromFile(sshUserFile);
+
   return {
     toolsConfigPath,
     ddevProject: process.env.DDEV_PROJECT ?? "default-project",
@@ -64,6 +86,10 @@ export function parseArgs(argv: string[]): BridgeConfig {
     hostProjectRoot: process.env.HOST_PROJECT_ROOT ?? "/workspace",
     containerProjectRoot:
       process.env.CONTAINER_PROJECT_ROOT ?? "/var/www/html",
-    sshUser: process.env.SSH_USER ?? process.env.USER,
+    sshUser:
+      process.env.DDEV_SSH_USER ??
+      sshUserFromFile ??
+      process.env.SSH_USER ??
+      process.env.USER,
   };
 }

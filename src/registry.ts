@@ -174,11 +174,15 @@ export class ToolRegistry {
         if (!cfg.ssh_target) { log.error(`Tool ${name}: missing ssh_target`); return null; }
 
         // Resolve environment variables and bridge placeholders
-        const sshTarget = resolveEnvVars(cfg.ssh_target, process.env as Record<string, string>, {
-          DDEV_PROJECT: this.config.ddevProject,
-        });
-        const sshUser = cfg.ssh_user ? resolveEnvVars(cfg.ssh_user) : undefined;
-        const workingDir = cfg.working_dir ? resolveEnvVars(cfg.working_dir) : undefined;
+        const envVars = {
+          ...(process.env as Record<string, string | undefined>),
+          DDEV_SSH_USER: process.env.DDEV_SSH_USER ?? this.config.sshUser,
+        };
+        const bridgeVars = { DDEV_PROJECT: this.config.ddevProject };
+
+        const sshTarget = resolveEnvVars(cfg.ssh_target, envVars, bridgeVars);
+        const sshUser = cfg.ssh_user ? resolveEnvVars(cfg.ssh_user, envVars, bridgeVars) : undefined;
+        const workingDir = cfg.working_dir ? resolveEnvVars(cfg.working_dir, envVars, bridgeVars) : undefined;
 
         return new CommandToolExecutor({
           commandTemplate: cfg.command_template,

@@ -26,27 +26,33 @@ export class SshExecutor implements ContainerExecutor {
     // Determine the SSH user to connect as
     const sshUser = this.resolveSshUser(user);
 
-    // Escape the command for safe shell execution
-    const escapedCmd = this.escapeShellCommand(command.join(" "));
-    
     // Build the full command, optionally with working directory change
-    let remoteCmd = escapedCmd;
+    let remoteCmd = command.join(" ");
     if (workingDir) {
-      const escapedDir = this.escapeShellCommand(workingDir);
-      remoteCmd = `cd ${escapedDir} && ${escapedCmd}`;
+      remoteCmd = `cd ${workingDir} && ${remoteCmd}`;
     }
-    
-    const fullCmd = `${shell} -c ${remoteCmd}`;
 
+    const envPrelude = this.buildDdevEnvPrelude(workingDir);
+    if (envPrelude) {
+      remoteCmd = `${envPrelude}${remoteCmd}`;
+    }
+
+    // Quote the full command so bash -c receives it as a single string
+    const escapedCmd = this.escapeShellCommand(remoteCmd);
+    
     // Build SSH destination: "user@hostname" or just "hostname"
     const sshDestination = sshUser ? `${sshUser}@${host}` : host;
+
+    const shellFlag = "-c";
 
     const sshArgs = [
       "-o", "StrictHostKeyChecking=no",
       "-o", "UserKnownHostsFile=/dev/null",
       "-o", "LogLevel=ERROR",
       sshDestination,
-      fullCmd
+      shell,
+      shellFlag,
+      escapedCmd,
     ];
 
     log.debug(`SSH Exec: ssh ${sshArgs.join(" ")}`);
@@ -60,7 +66,7 @@ export class SshExecutor implements ContainerExecutor {
           if (error) {
             reject(
               new Error(
-                `SSH command failed: ssh ${sshDestination} ${fullCmd}\n${stderr?.trim() || error.message}`,
+                `SSH command failed: ssh ${sshDestination} ${shell} ${shellFlag} ${escapedCmd}\n${stderr?.trim() || error.message}`,
               ),
             );
             return;
@@ -91,6 +97,17 @@ export class SshExecutor implements ContainerExecutor {
     // Escape single quotes by replacing ' with '\''
     const escaped = cmd.replace(/'/g, "'\\''");
     return `'${escaped}'`;
+  }
+
+  private buildDdevEnvPrelude(workingDir?: string): string {
+    if (!workingDir) {
+      return "";
+    }
+
+    const baseDir = workingDir.replace(/\/$/, "");
+    const configPath = this.escapeShellCommand(`${baseDir}/.ddev/config.yaml`);
+
+    return `if [ -f ${configPath} ]; then export $(awk -F'- ' '/- DB_(HOST|NAME|USER|PASS)=/ {print $2}' ${configPath} | xargs); fi; `;
   }
 }
 
