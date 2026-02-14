@@ -12,12 +12,16 @@ function readSshUserFromFile(filePath: string): string | undefined {
     return undefined;
   }
 
-  const raw = readFileSync(filePath, "utf-8").trim();
-  if (!raw) {
-    return undefined;
+  const raw = readFileSync(filePath, "utf-8");
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("DDEV_SSH_USER=")) {
+      const value = trimmed.slice("DDEV_SSH_USER=".length).trim();
+      return value || undefined;
+    }
   }
 
-  return raw;
+  return undefined;
 }
 
 function printUsage(): void {
@@ -74,9 +78,21 @@ export function parseArgs(argv: string[]): BridgeConfig {
     process.exit(1);
   }
 
-  const sshUserFile =
-    process.env.DDEV_SSH_USER_FILE ?? DEFAULT_SSH_USER_FILE;
-  const sshUserFromFile = readSshUserFromFile(sshUserFile);
+  // SSH user resolution strategy:
+  // 1. Primary: DDEV_SSH_USER env var (explicit override)
+  // 2. Secondary: Read from .env file (auto-detected in container)
+  // 3. Fallback: SSH_USER or USER env vars (host-based defaults)
+  let sshUser = process.env.DDEV_SSH_USER;
+  
+  if (!sshUser) {
+    const sshUserFile =
+      process.env.DDEV_SSH_USER_FILE ?? DEFAULT_SSH_USER_FILE;
+    sshUser = readSshUserFromFile(sshUserFile);
+  }
+  
+  if (!sshUser) {
+    sshUser = process.env.SSH_USER ?? process.env.USER;
+  }
 
   return {
     toolsConfigPath,
@@ -86,10 +102,6 @@ export function parseArgs(argv: string[]): BridgeConfig {
     hostProjectRoot: process.env.HOST_PROJECT_ROOT ?? "/workspace",
     containerProjectRoot:
       process.env.CONTAINER_PROJECT_ROOT ?? "/var/www/html",
-    sshUser:
-      process.env.DDEV_SSH_USER ??
-      sshUserFromFile ??
-      process.env.SSH_USER ??
-      process.env.USER,
+    sshUser,
   };
 }
