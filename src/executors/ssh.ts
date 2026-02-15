@@ -107,7 +107,7 @@ export class SshExecutor implements ContainerExecutor {
     const baseDir = workingDir.replace(/\/$/, "");
     const configPath = this.escapeShellCommand(`${baseDir}/.ddev/config.yaml`);
 
-    return `if [ -f ${configPath} ]; then export $(awk -F'- ' '/- DB_(HOST|NAME|USER|PASS)=/ {print $2}' ${configPath} | xargs); fi; `;
+    return `if [ -f ${configPath} ]; then export $(awk -F'- ' '/- (DB_(HOST|NAME|USER|PASS)|HASH_SALT|ENVIRONMENT_NAME)=/ {print $2}' ${configPath} | xargs); fi; `;
   }
 }
 

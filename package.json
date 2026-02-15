@@ -1,7 +1,7 @@
 {
   "name": "@wunderio/wdrmcp",
   "mcpName": "io.github.wunderio/wdrmcp",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Wunderio local MCP developer server",
   "type": "module",
   "bin": {
