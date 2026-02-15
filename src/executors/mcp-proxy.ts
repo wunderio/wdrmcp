@@ -152,19 +152,46 @@ export class McpProxyExecutor implements ToolExecutor {
     }
 
     const r = result as Record<string, unknown>;
-    if ("result" in r) return { content: String(r.result) };
+    if ("result" in r) {
+      const res = r.result;
+      // Return structured response with metadata for cleaner agent parsing
+      const response = {
+        data: res,
+        type: this.getDataType(res),
+        status: "success"
+      };
+      return { content: JSON.stringify(response) };
+    }
 
     const content = r.content;
     if (Array.isArray(content) && content.length > 0) {
-      return { content: (content[0] as Record<string, unknown>).text as string ?? JSON.stringify(result) };
+      const textContent = (content[0] as Record<string, unknown>).text as string;
+      return { content: textContent ?? JSON.stringify(result) };
     }
 
     if ("error" in r) {
       const err = r.error as Record<string, unknown>;
-      return { content: `RPC Error: ${err.message ?? String(err)}`, isError: true };
+      const response = {
+        error: err.message ?? String(err),
+        code: err.code ?? -1,
+        status: "error"
+      };
+      return { content: JSON.stringify(response), isError: true };
     }
 
-    return { content: JSON.stringify(result) };
+    const response = {
+      data: result,
+      type: this.getDataType(result),
+      status: "success"
+    };
+    return { content: JSON.stringify(response) };
+  }
+
+  /** Determine the type of data for metadata. */
+  private getDataType(value: unknown): string {
+    if (value === null) return "null";
+    if (Array.isArray(value)) return "array";
+    return typeof value;
   }
 }
 

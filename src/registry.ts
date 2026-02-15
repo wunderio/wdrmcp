@@ -130,7 +130,8 @@ export class ToolRegistry {
 
       if (!remoteTools?.length) { log.warn(`No tools from ${proxyName}`); return 0; }
 
-      const prefix = proxyConfig.tool_prefix ?? "";
+      // Always prefix remote tools with the proxy tool name
+      const prefix = `${proxyName}_`;
       let count = 0;
 
       for (const remote of remoteTools) {
