@@ -82,7 +82,11 @@ export class CommandToolExecutor implements ToolExecutor {
       });
       return { content: output.trim() };
     } catch (e) {
-      return { content: `Execution failed: ${(e as Error).message}`, isError: true };
+      const errorMsg = (e as Error).message;
+      return { 
+        content: `Command failed: ${cmdStr.split("&&")[0].trim()}\nError: ${errorMsg}`, 
+        isError: true 
+      };
     }
   }
 

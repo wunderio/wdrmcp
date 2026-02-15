@@ -64,11 +64,8 @@ export class SshExecutor implements ContainerExecutor {
         { maxBuffer: 10 * 1024 * 1024, timeout: 120_000 },
         (error, stdout, stderr) => {
           if (error) {
-            reject(
-              new Error(
-                `SSH command failed: ssh ${sshDestination} ${shell} ${shellFlag} ${escapedCmd}\n${stderr?.trim() || error.message}`,
-              ),
-            );
+            const cleanedError = this.extractErrorMessage(stderr?.trim() || error.message);
+            reject(new Error(cleanedError));
             return;
           }
           resolve(stdout);
@@ -108,6 +105,29 @@ export class SshExecutor implements ContainerExecutor {
     const configPath = this.escapeShellCommand(`${baseDir}/.ddev/config.yaml`);
 
     return `if [ -f ${configPath} ]; then export $(awk -F'- ' '/- (DB_(HOST|NAME|USER|PASS)|HASH_SALT|ENVIRONMENT_NAME)=/ {print $2}' ${configPath} | xargs); fi; `;
+  }
+
+  /**
+   * Extract the most relevant error information from stderr.
+   * Removes file paths, line numbers, and stack traces, keeping only actionable error lines.
+   */
+  private extractErrorMessage(stderr: string): string {
+    const lines = stderr.split("\n");
+    const cleanedLines: string[] = [];
+
+    for (const line of lines) {
+      // Skip empty lines and common noise
+      if (!line.trim()) continue;
+      if (line.includes(".php in ") || line.includes("Stack trace:")) continue;
+      if (line.match(/^\s+#\d+/)) continue; // Skip stack trace lines (e.g. "  #0 Class::method()")
+      if (line.match(/at line \d+/i)) continue; // Skip "at line X" references
+      if (line.match(/^In .*\.php line \d+:/)) continue; // Skip file references
+
+      cleanedLines.push(line.trim());
+    }
+
+    // Return joined lines, or fall back to original if nothing cleaned up
+    return cleanedLines.join("\n").trim() || stderr;
   }
 }
 
