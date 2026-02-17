@@ -12,6 +12,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { globSync } from "glob";
 import yaml from "js-yaml";
+import { z } from "zod";
 import { getLogger } from "./logger.js";
 import { resolveEnvVars } from "./env-resolve.js";
 import { SshExecutor } from "./executors/ssh.js";
@@ -30,6 +31,69 @@ import type {
   ContainerExecutor
 } from "./types.js";
 
+const ValidationRuleSchema = z.object({
+  pattern: z.string(),
+  message: z.string().optional(),
+}).strict();
+
+const JsonSchemaPropertySchema: z.ZodType = z.lazy(() => z.object({
+  type: z.string(),
+  description: z.string().optional(),
+  enum: z.array(z.string()).optional(),
+  default: z.unknown().optional(),
+}).strict());
+
+const JsonSchemaSchema: z.ZodType = z.lazy(() => z.object({
+  type: z.string(),
+  properties: z.record(JsonSchemaPropertySchema).optional(),
+  required: z.array(z.string()).optional(),
+}).strict());
+
+const CommandToolConfigSchema = z.object({
+  name: z.string(),
+  enabled: z.boolean().optional(),
+  description: z.string(),
+  type: z.literal("command"),
+  input_schema: JsonSchemaSchema.optional(),
+  command_template: z.string(),
+  ssh_target: z.string(),
+  ssh_user: z.string().optional(),
+  working_dir: z.string().optional(),
+  shell: z.string().optional(),
+  default_args: z.record(z.string()).optional(),
+  disallowed_commands: z.array(z.string()).optional(),
+  validation_rules: z.array(ValidationRuleSchema).optional(),
+  max_arg_length: z.number().int().positive().optional(),
+}).strict();
+
+const McpServerToolConfigSchema = z.object({
+  name: z.string(),
+  enabled: z.boolean().optional(),
+  description: z.string(),
+  type: z.literal("mcp_server"),
+  input_schema: JsonSchemaSchema.optional(),
+  server_url: z.string(),
+  tool_prefix: z.string().optional(),
+  forward_args: z.boolean().optional(),
+  timeout: z.number().int().positive().optional(),
+  auth_username: z.string().optional(),
+  auth_password: z.string().optional(),
+  auth_token: z.string().optional(),
+  auth_token_basic: z.boolean().optional(),
+  verify_ssl: z.boolean().optional(),
+  expose_remote_tools: z.boolean().optional(),
+  init_timeout: z.number().int().positive().optional(),
+}).strict();
+
+const ToolConfigSchema = z.discriminatedUnion("type", [
+  CommandToolConfigSchema,
+  McpServerToolConfigSchema,
+]);
+
+const ToolsFileSchemaValidator = z.object({
+  tools: z.array(ToolConfigSchema),
+}).strict();
+
 export class ToolRegistry {
   private readonly toolsConfigDir: string;
   private readonly config: BridgeConfig;
@@ -43,7 +107,10 @@ export class ToolRegistry {
 
     // Initialize standard container executor (now SSH based)
     // Pass the configured SSH user or fall back to environment
-    this.containerExecutor = new SshExecutor(config.sshUser);
+    this.containerExecutor = new SshExecutor({
+      defaultUser: config.sshUser,
+      strictHostKeyChecking: config.strictHostKeyChecking,
+    });
 
     // Path normalization as a composable preprocessor.
     // Converts devcontainer paths (e.g. /workspace/...) to container paths (/var/www/html/...).
@@ -82,10 +149,20 @@ export class ToolRegistry {
           log.debug(`Loading config file: ${file}`);
         }
         const content = readFileSync(filePath, "utf-8");
-        const fileConfig = yaml.load(content) as ToolsFileSchema | null;
+        const parsed = yaml.load(content);
 
-        if (!fileConfig) { log.warn(`Empty config file: ${file}`); continue; }
-        if (!fileConfig.tools) { log.error(`Missing 'tools' array in ${file}`); continue; }
+        if (!parsed) { log.warn(`Empty config file: ${file}`); continue; }
+
+        const validation = ToolsFileSchemaValidator.safeParse(parsed);
+        if (!validation.success) {
+          const details = validation.error.issues
+            .map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`)
+            .join("; ");
+          log.error(`Invalid config schema in ${file}: ${details}`);
+          continue;
+        }
+
+        const fileConfig = validation.data as ToolsFileSchema;
 
         if (log.isVerbose()) {
           log.debug(`Found ${fileConfig.tools.length} tools in ${file}`);
@@ -210,6 +287,7 @@ export class ToolRegistry {
           defaultArgs: cfg.default_args,
           disallowedCommands: cfg.disallowed_commands,
           validationRules: cfg.validation_rules,
+          maxArgLength: cfg.max_arg_length,
         });
       }
 
@@ -217,13 +295,34 @@ export class ToolRegistry {
         const cfg = toolConfig as McpServerToolConfig;
         if (!cfg.server_url) { log.error(`Tool ${name}: missing server_url`); return null; }
 
+        const envVars = {
+          ...(process.env as Record<string, string | undefined>),
+          DDEV_SSH_USER: process.env.DDEV_SSH_USER ?? this.config.sshUser,
+        };
+        const bridgeVars = { DDEV_PROJECT: this.config.ddevProject };
+
+        const authUsername = cfg.auth_username
+          ? resolveEnvVars(cfg.auth_username, envVars, bridgeVars)
+          : undefined;
+        const authPassword = cfg.auth_password
+          ? resolveEnvVars(cfg.auth_password, envVars, bridgeVars)
+          : undefined;
+        const authToken = cfg.auth_token
+          ? resolveEnvVars(cfg.auth_token, envVars, bridgeVars)
+          : undefined;
+
+        if ((cfg.auth_token && !cfg.auth_token.includes("${")) ||
+            (cfg.auth_password && !cfg.auth_password.includes("${"))) {
+          log.warn(`Tool ${name}: auth credentials appear to be literal values; prefer environment variable placeholders`);
+        }
+
         return new McpProxyExecutor({
           serverUrl: cfg.server_url,
           forwardArgs: cfg.forward_args,
           timeout: cfg.timeout,
-          authUsername: cfg.auth_username,
-          authPassword: cfg.auth_password,
-          authToken: cfg.auth_token,
+          authUsername,
+          authPassword,
+          authToken,
           authTokenBasic: cfg.auth_token_basic,
           verifySsl: cfg.verify_ssl,
         });

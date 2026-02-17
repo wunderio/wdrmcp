@@ -16,6 +16,7 @@ export interface CommandExecutorOptions {
   defaultArgs?: Record<string, string>;
   disallowedCommands?: string[];
   validationRules?: ValidationRule[];
+  maxArgLength?: number;
 }
 
 export class CommandToolExecutor implements ToolExecutor {
@@ -28,6 +29,7 @@ export class CommandToolExecutor implements ToolExecutor {
   private readonly defaultArgs: Record<string, string>;
   private readonly disallowedCommands: Set<string>;
   private readonly validationRules: ValidationRule[];
+  private readonly maxArgLength: number;
 
   constructor(options: CommandExecutorOptions) {
     this.commandTemplate = options.commandTemplate;
@@ -39,6 +41,7 @@ export class CommandToolExecutor implements ToolExecutor {
     this.defaultArgs = options.defaultArgs ?? {};
     this.disallowedCommands = new Set(options.disallowedCommands ?? []);
     this.validationRules = options.validationRules ?? [];
+    this.maxArgLength = options.maxArgLength ?? 4096;
   }
 
   async execute(args: Record<string, unknown>): Promise<ToolExecutionResult> {
@@ -51,10 +54,12 @@ export class CommandToolExecutor implements ToolExecutor {
       log.debug(`Executing with args:`, mergedArgs);
     }
 
-    // Check disallowed commands.
-    if (typeof mergedArgs.command === "string" && this.disallowedCommands.has(mergedArgs.command)) {
-      log.warn(`Blocked disallowed command: ${mergedArgs.command}`);
-      return { content: `Error: Command '${mergedArgs.command}' is not allowed`, isError: true };
+    // Check disallowed patterns against all provided string arguments.
+    for (const value of Object.values(mergedArgs)) {
+      if (typeof value === "string" && this.matchesDisallowed(value)) {
+        log.warn(`Blocked disallowed command in arguments`);
+        return { content: "Error: Command contains blocked pattern", isError: true };
+      }
     }
 
     // Substitute arguments into template.
@@ -64,7 +69,7 @@ export class CommandToolExecutor implements ToolExecutor {
         log.debug(`Command template: ${this.commandTemplate}`);
       }
       cmdStr = this.commandTemplate.replace(/\{(\w+)\}/g, (_match, key) => {
-        if (key in mergedArgs) return String(mergedArgs[key]);
+        if (key in mergedArgs) return this.escapeShellArg(String(mergedArgs[key]));
         throw new Error(`Missing required argument: ${key}`);
       });
       if (log.isVerbose()) {
@@ -80,6 +85,11 @@ export class CommandToolExecutor implements ToolExecutor {
     if (ruleError) {
       log.warn(`Validation failed: ${ruleError}`);
       return { content: `Validation error: ${ruleError}`, isError: true };
+    }
+
+    if (this.matchesDisallowed(cmdStr)) {
+      log.warn(`Blocked disallowed command in rendered template`);
+      return { content: "Error: Command contains blocked pattern", isError: true };
     }
 
     // Execute via injected executor (SSH or other).
@@ -110,16 +120,28 @@ export class CommandToolExecutor implements ToolExecutor {
         log.debug(`Failed command: ${cmdStr}`);
       }
       return { 
-        content: `Command failed: ${cmdStr.split("&&")[0].trim()}\nError: ${errorMsg}`, 
+        content: `Command failed: ${errorMsg}`,
         isError: true 
       };
     }
   }
 
   validateArguments(args: Record<string, unknown>): void {
-    // Check validation rules against stringified arguments.
-    const ruleError = this.checkRules(JSON.stringify(args));
-    if (ruleError) throw new Error(ruleError);
+    // Check validation rules and max-length against each string argument value.
+    for (const [key, value] of Object.entries(args)) {
+      if (typeof value !== "string") {
+        continue;
+      }
+
+      if (value.length > this.maxArgLength) {
+        throw new Error(`Argument '${key}' exceeds max length of ${this.maxArgLength}`);
+      }
+
+      const ruleError = this.checkRules(value);
+      if (ruleError) {
+        throw new Error(ruleError);
+      }
+    }
 
     // Verify required placeholders are provided.
     const placeholders = new Set(
@@ -141,5 +163,29 @@ export class CommandToolExecutor implements ToolExecutor {
       }
     }
     return null;
+  }
+
+  private escapeShellArg(value: string): string {
+    return `'${value.replace(/'/g, `'"'"'`)}'`;
+  }
+
+  private matchesDisallowed(value: string): boolean {
+    for (const disallowed of this.disallowedCommands) {
+      if (!disallowed) {
+        continue;
+      }
+
+      const trimmed = disallowed.trim();
+      if (!trimmed) {
+        continue;
+      }
+
+      const escaped = trimmed.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const pattern = new RegExp(`(?:^|[\\s;&|()])${escaped}(?:$|[\\s;&|()])`, "i");
+      if (pattern.test(value)) {
+        return true;
+      }
+    }
+    return false;
   }
 }

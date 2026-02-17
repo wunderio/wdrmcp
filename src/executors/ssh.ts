@@ -8,9 +8,11 @@ import type { ContainerExecutor } from "../types.js";
  */
 export class SshExecutor implements ContainerExecutor {
   private readonly defaultUser: string | undefined;
+  private readonly strictHostKeyChecking: boolean;
 
-  constructor(defaultUser?: string) {
-    this.defaultUser = defaultUser ?? process.env.USER;
+  constructor(options?: { defaultUser?: string; strictHostKeyChecking?: boolean }) {
+    this.defaultUser = options?.defaultUser ?? process.env.USER;
+    this.strictHostKeyChecking = options?.strictHostKeyChecking ?? false;
   }
 
   async execute(options: {
@@ -37,7 +39,7 @@ export class SshExecutor implements ContainerExecutor {
     // Build the full command, optionally with working directory change
     let remoteCmd = command.join(" ");
     if (workingDir) {
-      remoteCmd = `cd ${workingDir} && ${remoteCmd}`;
+      remoteCmd = `cd ${this.escapeShellArg(workingDir)} && ${remoteCmd}`;
     }
 
     const envPrelude = this.buildDdevEnvPrelude(workingDir);
@@ -60,15 +62,13 @@ export class SshExecutor implements ContainerExecutor {
 
     const shellFlag = "-c";
 
-    const sshArgs = [
-      "-o", "StrictHostKeyChecking=no",
-      "-o", "UserKnownHostsFile=/dev/null",
-      "-o", "LogLevel=ERROR",
-      sshDestination,
-      shell,
-      shellFlag,
-      escapedCmd,
-    ];
+    const sshArgs = ["-o", "LogLevel=ERROR"];
+    if (this.strictHostKeyChecking) {
+      sshArgs.push("-o", "StrictHostKeyChecking=yes");
+    } else {
+      sshArgs.push("-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null");
+    }
+    sshArgs.push(sshDestination, shell, shellFlag, escapedCmd);
 
     if (log.isVerbose()) {
       log.debug(`SSH: Executing ssh ${sshDestination} ${shell} -c '<command>'`);
@@ -121,15 +121,19 @@ export class SshExecutor implements ContainerExecutor {
     return `'${escaped}'`;
   }
 
+  private escapeShellArg(value: string): string {
+    return `'${value.replace(/'/g, `'"'"'`)}'`;
+  }
+
   private buildDdevEnvPrelude(workingDir?: string): string {
     if (!workingDir) {
       return "";
     }
 
     const baseDir = workingDir.replace(/\/$/, "");
-    const configPath = this.escapeShellCommand(`${baseDir}/.ddev/config.yaml`);
+    const configPath = this.escapeShellArg(`${baseDir}/.ddev/config.yaml`);
 
-    return `if [ -f ${configPath} ]; then export $(awk -F'- ' '/- (DB_(HOST|NAME|USER|PASS)|HASH_SALT|ENVIRONMENT_NAME)=/ {print $2}' ${configPath} | xargs); fi; `;
+    return `if [ -f ${configPath} ]; then awk -F'- ' '/- (DB_(HOST|NAME|USER|PASS)|HASH_SALT|ENVIRONMENT_NAME)=/ {print $2}' ${configPath} | while IFS= read -r kv; do [ -n "$kv" ] && export "$kv"; done; fi; `;
   }
 }
 

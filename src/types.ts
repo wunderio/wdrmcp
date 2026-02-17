@@ -45,12 +45,14 @@ export interface CommandToolConfig extends BaseToolConfig {
   default_args?: Record<string, string>;
   disallowed_commands?: string[];
   validation_rules?: ValidationRule[];
+  max_arg_length?: number;
 }
 
 /** Configuration for an MCP server proxy tool. */
 export interface McpServerToolConfig extends BaseToolConfig {
   type: "mcp_server";
   server_url: string;
+  tool_prefix?: string;
   forward_args?: boolean;
   timeout?: number;
   auth_username?: string;
@@ -112,6 +114,8 @@ export interface BridgeConfig {
   containerProjectRoot: string;
   /** SSH user for container connections (defaults to current user). */
   sshUser?: string;
+  /** Enforce SSH host key validation. */
+  strictHostKeyChecking: boolean;
   /** Enable verbose logging (full outputs, extensive debugging). */
   verboseLogging: boolean;
 }

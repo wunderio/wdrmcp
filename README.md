@@ -40,6 +40,7 @@ wdrmcp --tools-config /path/to/tools-config [options]
 | `--tools-config <path>` | Path to YAML tool config directory | *(required)* |
 | `--log-level <level>` | Log level (debug, info, warn, error) | `info` |
 | `--log-file <path>` | Log file path | `/tmp/wdrmcp.log` |
+| `--strict-host-key-checking` | Enforce SSH host key verification | `false` |
 
 **Environment variables:**
 
@@ -48,6 +49,7 @@ wdrmcp --tools-config /path/to/tools-config [options]
 | `DDEV_PROJECT` | DDEV project name | `default-project` |
 | `HOST_PROJECT_ROOT` | Host filesystem project root | `/workspace` |
 | `CONTAINER_PROJECT_ROOT` | Container filesystem project root | `/var/www/html` |
+| `SSH_STRICT_HOST_KEY_CHECKING` | Enforce SSH host key verification (`true`/`false`) | `false` |
 
 ### VS Code / GitHub Copilot Configuration
 
@@ -71,7 +73,7 @@ Tools are defined in YAML files within the tools-config directory. Each file mus
 
 ### Command Tool
 
-Executes shell commands in Docker containers:
+Executes shell commands over SSH:
 
 ```yaml
 tools:
@@ -80,8 +82,9 @@ tools:
     description: "What this tool does"
     type: command
     command_template: "my-command {arg1} {arg2}"
-    container: "ddev-{DDEV_PROJECT}-web"
-    user: "www-data"
+    ssh_target: "web"
+    ssh_user: "${DDEV_SSH_USER}"
+    working_dir: "/var/www/html"
     shell: "/bin/bash"
     default_args:
       arg2: "default-value"
@@ -91,6 +94,7 @@ tools:
     validation_rules:
       - pattern: "dangerous-pattern"
         message: "This pattern is not allowed"
+    max_arg_length: 4096
     input_schema:
       type: object
       properties:
@@ -115,7 +119,7 @@ tools:
     expose_remote_tools: true
     tool_prefix: "remote_"
     timeout: 30
-    auth_token: "my-token"
+    auth_token: "${REMOTE_MCP_TOKEN}"
     verify_ssl: true
 ```
 
@@ -139,3 +143,10 @@ src/
 ## License
 
 MIT
+
+## Security Notes
+
+- Argument placeholders in `command_template` are shell-escaped per argument before execution.
+- `disallowed_commands` are matched against both argument values and rendered command strings.
+- Host key verification is configurable; set `--strict-host-key-checking` (or `SSH_STRICT_HOST_KEY_CHECKING=true`) for production-like environments.
+- Use environment placeholders for credentials (`${VAR}`) instead of literal secrets in YAML.

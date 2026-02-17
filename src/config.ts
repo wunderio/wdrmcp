@@ -32,6 +32,7 @@ Options:
   --tools-config <path>   Path to directory containing YAML tool configuration files (required)
   --log-level <level>     Log level: debug, info, warn, error (default: info)
   --log-file <path>       Path to log file (default: /tmp/wdrmcp.log)
+  --strict-host-key-checking  Enforce SSH host key verification (default: false)
   --verbose               Enable extensive logging (full outputs, command details, debug info)
   --help                  Show this help message
 
@@ -42,6 +43,7 @@ Environment variables:
   DDEV_SSH_USER           SSH user for container connections (preferred)
   DDEV_SSH_USER_FILE      Path to a file containing SSH user (fallback)
   SSH_USER                SSH user for container connections (fallback, default: $USER)
+  SSH_STRICT_HOST_KEY_CHECKING  true/false toggle for SSH host key checking
 `);
 }
 
@@ -52,6 +54,8 @@ export function parseArgs(argv: string[]): BridgeConfig {
   let logLevel: BridgeConfig["logLevel"] = "info";
   let logFile: string | undefined = "/tmp/wdrmcp.log";
   let verboseLogging = false;
+  let strictHostKeyChecking =
+    (process.env.SSH_STRICT_HOST_KEY_CHECKING ?? "false").toLowerCase() === "true";
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
@@ -66,6 +70,9 @@ export function parseArgs(argv: string[]): BridgeConfig {
         break;
       case "--verbose":
         verboseLogging = true;
+        break;
+      case "--strict-host-key-checking":
+        strictHostKeyChecking = true;
         break;
       case "--help":
         printUsage();
@@ -109,5 +116,6 @@ export function parseArgs(argv: string[]): BridgeConfig {
     containerProjectRoot:
       process.env.CONTAINER_PROJECT_ROOT ?? "/var/www/html",
     sshUser,
+    strictHostKeyChecking,
   };
 }

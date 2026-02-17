@@ -32,12 +32,17 @@ export class McpProxyExecutor implements ToolExecutor {
   private readonly forwardArgs: boolean;
   private readonly timeout: number;
   private readonly headers: Record<string, string>;
+  private requestId = 1;
 
   constructor(options: McpProxyOptions) {
     this.serverUrl = options.serverUrl;
     this.forwardArgs = options.forwardArgs ?? true;
     this.timeout = (options.timeout ?? 10) * 1000;
     this.headers = { "Content-Type": "application/json" };
+
+    if (options.verifySsl === false) {
+      getLogger().warn("verify_ssl=false is not supported; TLS certificate verification remains enabled by Node.js fetch defaults");
+    }
 
     if (options.authToken) {
       if (options.authTokenBasic) {
@@ -128,12 +133,13 @@ export class McpProxyExecutor implements ToolExecutor {
   private async rpc(method: string, params: Record<string, unknown>): Promise<unknown> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeout);
+    const id = this.requestId++;
 
     try {
       const response = await fetch(this.serverUrl, {
         method: "POST",
         headers: this.headers,
-        body: JSON.stringify({ jsonrpc: "2.0", method, params, id: 1 }),
+        body: JSON.stringify({ jsonrpc: "2.0", method, params, id }),
         signal: controller.signal,
       });
       if (!response.ok) {
