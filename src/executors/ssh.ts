@@ -24,11 +24,15 @@ export class SshExecutor implements ContainerExecutor {
     const log = getLogger();
     const startTime = Date.now();
 
-    log.debug(`SSH: Connecting to ${host}, workingDir=${workingDir || "/"}, shell=${shell}`);
+    if (log.isVerbose()) {
+      log.debug(`SSH: Connecting to ${host}, workingDir=${workingDir || "/"}, shell=${shell}`);
+    }
 
     // Determine the SSH user to connect as
     const sshUser = this.resolveSshUser(user);
-    log.debug(`SSH: User resolved to: ${sshUser || "default"}`);
+    if (log.isVerbose()) {
+      log.debug(`SSH: User resolved to: ${sshUser || "default"}`);
+    }
 
     // Build the full command, optionally with working directory change
     let remoteCmd = command.join(" ");
@@ -39,10 +43,14 @@ export class SshExecutor implements ContainerExecutor {
     const envPrelude = this.buildDdevEnvPrelude(workingDir);
     if (envPrelude) {
       remoteCmd = `${envPrelude}${remoteCmd}`;
-      log.debug(`SSH: Adding DDEV env prelude`);
+      if (log.isVerbose()) {
+        log.debug(`SSH: Adding DDEV env prelude`);
+      }
     }
 
-    log.debug(`SSH: Full remote command: ${remoteCmd.substring(0, 200)}${remoteCmd.length > 200 ? "..." : ""}`);
+    if (log.isVerbose()) {
+      log.debug(`SSH: Full remote command: ${remoteCmd.substring(0, 200)}${remoteCmd.length > 200 ? "..." : ""}`);
+    }
 
     // Quote the full command so bash -c receives it as a single string
     const escapedCmd = this.escapeShellCommand(remoteCmd);
@@ -62,7 +70,9 @@ export class SshExecutor implements ContainerExecutor {
       escapedCmd,
     ];
 
-    log.debug(`SSH: Executing ssh ${sshDestination} ${shell} -c '<command>'`);
+    if (log.isVerbose()) {
+      log.debug(`SSH: Executing ssh ${sshDestination} ${shell} -c '<command>'`);
+    }
 
     return new Promise((resolve, reject) => {
       execFile(
@@ -75,7 +85,9 @@ export class SshExecutor implements ContainerExecutor {
           if (error) {
             const cleanedError = (stderr?.trim() || error.message).trim();
             log.error(`SSH: Command failed on ${host} (${duration}ms): ${cleanedError}`);
-            log.debug(`SSH: Raw stderr: ${stderr}`);
+            if (log.isVerbose()) {
+              log.debug(`SSH: Raw stderr: ${stderr}`);
+            }
             reject(new Error(cleanedError));
             return;
           }

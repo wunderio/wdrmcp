@@ -112,6 +112,8 @@ export interface BridgeConfig {
   containerProjectRoot: string;
   /** SSH user for container connections (defaults to current user). */
   sshUser?: string;
+  /** Enable verbose logging (full outputs, extensive debugging). */
+  verboseLogging: boolean;
 }
 
 /** Interface for executing commands via SSH. */

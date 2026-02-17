@@ -70,20 +70,26 @@ export class ToolRegistry {
       log.warn(`No .yml files found in ${this.toolsConfigDir}`);
     }
     
-    log.debug(`Found config files: ${configFiles.join(", ")}`);
+    if (log.isVerbose()) {
+      log.debug(`Found config files: ${configFiles.join(", ")}`);
+    }
     let loadedCount = 0;
 
     for (const file of configFiles) {
       const filePath = join(this.toolsConfigDir, file);
       try {
-        log.debug(`Loading config file: ${file}`);
+        if (log.isVerbose()) {
+          log.debug(`Loading config file: ${file}`);
+        }
         const content = readFileSync(filePath, "utf-8");
         const fileConfig = yaml.load(content) as ToolsFileSchema | null;
 
         if (!fileConfig) { log.warn(`Empty config file: ${file}`); continue; }
         if (!fileConfig.tools) { log.error(`Missing 'tools' array in ${file}`); continue; }
 
-        log.debug(`Found ${fileConfig.tools.length} tools in ${file}`);
+        if (log.isVerbose()) {
+          log.debug(`Found ${fileConfig.tools.length} tools in ${file}`);
+        }
         for (const toolConfig of fileConfig.tools) {
           loadedCount += await this.loadSingleTool(toolConfig);
         }
@@ -250,12 +256,16 @@ export class ToolRegistry {
     }
 
     const { executor, config } = registered;
-    log.debug(`Tool executor type: ${executor.constructor.name}`);
-    log.debug(`Tool config type: ${config.type || "command"}`);
+    if (log.isVerbose()) {
+      log.debug(`Tool executor type: ${executor.constructor.name}`);
+      log.debug(`Tool config type: ${config.type || "command"}`);
+    }
 
     try {
       executor.validateArguments(args);
-      log.debug(`Tool arguments validated: ${JSON.stringify(args)}`);
+      if (log.isVerbose()) {
+        log.debug(`Tool arguments validated: ${JSON.stringify(args)}`);
+      }
     } catch (e) {
       const validationError = (e as Error).message;
       log.warn(`Tool validation failed: ${validationError}`);
@@ -265,7 +275,9 @@ export class ToolRegistry {
     // Apply preprocessor (path normalization).
     const processedArgs = this.argPreprocessor(args);
     if (JSON.stringify(args) !== JSON.stringify(processedArgs)) {
-      log.debug(`Path normalization applied: ${JSON.stringify(processedArgs)}`);
+      if (log.isVerbose()) {
+        log.debug(`Path normalization applied: ${JSON.stringify(processedArgs)}`);
+      }
     }
 
     try {
@@ -273,7 +285,9 @@ export class ToolRegistry {
     } catch (e) {
       const execError = (e as Error).message;
       log.error(`Tool execution error: ${execError}`);
-      log.debug(`Tool that failed: ${name}, executor: ${executor.constructor.name}`);
+      if (log.isVerbose()) {
+        log.debug(`Tool that failed: ${name}, executor: ${executor.constructor.name}`);
+      }
       return { content: `Error: ${execError}`, isError: true };
     }
   }

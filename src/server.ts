@@ -55,8 +55,10 @@ export function createMcpServer(registry: ToolRegistry): McpServer {
       async (args) => {
         const startTime = Date.now();
         log.info(`========== TOOL START: ${toolName} ==========`);
-        log.info(`Tool input arguments: ${JSON.stringify(args)}`);
-        log.debug(`Tool config: ${JSON.stringify(config)}`);
+        if (log.isVerbose()) {
+          log.info(`Tool input arguments: ${JSON.stringify(args)}`);
+          log.debug(`Tool config: ${JSON.stringify(config)}`);
+        }
         
         try {
           const result = await registry.executeTool(toolName, args as Record<string, unknown>);
@@ -64,12 +66,16 @@ export function createMcpServer(registry: ToolRegistry): McpServer {
           
           if (result.isError) {
             log.error(`TOOL RESULT (${duration}ms, ERROR): ${toolName}`);
-            log.info(`TOOL OUTPUT (error, ${result.content.length} chars):`);
-            log.info(result.content);
+            if (log.isVerbose()) {
+              log.info(`TOOL OUTPUT (error, ${result.content.length} chars):`);
+              log.info(result.content);
+            }
           } else {
             log.info(`TOOL RESULT (${duration}ms, SUCCESS): ${toolName}`);
-            log.info(`TOOL OUTPUT (${result.content.length} chars):`);
-            log.info(result.content);
+            if (log.isVerbose()) {
+              log.info(`TOOL OUTPUT (${result.content.length} chars):`);
+              log.info(result.content);
+            }
           }
           log.info(`========== TOOL END: ${toolName} ==========`);
           
@@ -81,7 +87,9 @@ export function createMcpServer(registry: ToolRegistry): McpServer {
           const duration = Date.now() - startTime;
           const errorMsg = error instanceof Error ? error.message : String(error);
           log.error(`TOOL EXCEPTION (${duration}ms): ${toolName} - ${errorMsg}`);
-          log.error(`Exception stack: ${error instanceof Error ? error.stack : ""}`);
+          if (log.isVerbose()) {
+            log.error(`Exception stack: ${error instanceof Error ? error.stack : ""}`);
+          }
           log.info(`========== TOOL END: ${toolName} (EXCEPTION) ==========`);
           return {
             content: [{ type: "text" as const, text: `Tool execution failed: ${errorMsg}` }],

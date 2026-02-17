@@ -32,6 +32,7 @@ Options:
   --tools-config <path>   Path to directory containing YAML tool configuration files (required)
   --log-level <level>     Log level: debug, info, warn, error (default: info)
   --log-file <path>       Path to log file (default: /tmp/wdrmcp.log)
+  --verbose               Enable extensive logging (full outputs, command details, debug info)
   --help                  Show this help message
 
 Environment variables:
@@ -50,6 +51,7 @@ export function parseArgs(argv: string[]): BridgeConfig {
   let toolsConfigPath: string | undefined;
   let logLevel: BridgeConfig["logLevel"] = "info";
   let logFile: string | undefined = "/tmp/wdrmcp.log";
+  let verboseLogging = false;
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
@@ -61,6 +63,9 @@ export function parseArgs(argv: string[]): BridgeConfig {
         break;
       case "--log-file":
         logFile = args[++i];
+        break;
+      case "--verbose":
+        verboseLogging = true;
         break;
       case "--help":
         printUsage();
@@ -99,6 +104,7 @@ export function parseArgs(argv: string[]): BridgeConfig {
     ddevProject: process.env.DDEV_PROJECT ?? "default-project",
     logLevel,
     logFile,
+    verboseLogging,
     hostProjectRoot: process.env.HOST_PROJECT_ROOT ?? "/workspace",
     containerProjectRoot:
       process.env.CONTAINER_PROJECT_ROOT ?? "/var/www/html",

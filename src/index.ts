@@ -23,7 +23,7 @@ async function main(): Promise<void> {
   const config = parseArgs(process.argv);
 
   // Initialize logger (stderr only — stdout is reserved for JSON-RPC).
-  initLogger(config.logLevel, config.logFile);
+  initLogger(config.logLevel, config.logFile, config.verboseLogging);
   const log = getLogger();
 
   try {

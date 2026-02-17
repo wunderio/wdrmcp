@@ -17,10 +17,12 @@ const LOG_LEVELS: Record<LogLevel, number> = {
 export class Logger {
     private level: number;
     private logFile?: string;
+    private verboseLogging: boolean;
 
-    constructor(level: LogLevel = "info", logFile?: string) {
+    constructor(level: LogLevel = "info", logFile?: string, verboseLogging = false) {
         this.level = LOG_LEVELS[level];
         this.logFile = logFile;
+        this.verboseLogging = verboseLogging;
 
         // Truncate log file on start.
         if (this.logFile) {
@@ -30,6 +32,10 @@ export class Logger {
                 // Ignore if we can't create the log file.
             }
         }
+    }
+
+    isVerbose(): boolean {
+        return this.verboseLogging;
     }
 
     private formatArgs(args: unknown[]): string {
@@ -82,8 +88,8 @@ export class Logger {
 /** Singleton logger instance — call `initLogger()` to configure. */
 let logger = new Logger();
 
-export function initLogger(level: LogLevel = "info", logFile?: string): Logger {
-    logger = new Logger(level, logFile);
+export function initLogger(level: LogLevel = "info", logFile?: string, verboseLogging = false): Logger {
+    logger = new Logger(level, logFile, verboseLogging);
     return logger;
 }
 
