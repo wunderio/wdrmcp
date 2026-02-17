@@ -63,18 +63,27 @@ export class ToolRegistry {
       return 0;
     }
 
+    log.info(`Loading tools from: ${this.toolsConfigDir}`);
     const configFiles = globSync("*.yml", { cwd: this.toolsConfigDir }).sort();
+    
+    if (configFiles.length === 0) {
+      log.warn(`No .yml files found in ${this.toolsConfigDir}`);
+    }
+    
+    log.debug(`Found config files: ${configFiles.join(", ")}`);
     let loadedCount = 0;
 
     for (const file of configFiles) {
       const filePath = join(this.toolsConfigDir, file);
       try {
+        log.debug(`Loading config file: ${file}`);
         const content = readFileSync(filePath, "utf-8");
         const fileConfig = yaml.load(content) as ToolsFileSchema | null;
 
         if (!fileConfig) { log.warn(`Empty config file: ${file}`); continue; }
-        if (!fileConfig.tools) { log.error(`Missing 'tools' array: ${file}`); continue; }
+        if (!fileConfig.tools) { log.error(`Missing 'tools' array in ${file}`); continue; }
 
+        log.debug(`Found ${fileConfig.tools.length} tools in ${file}`);
         for (const toolConfig of fileConfig.tools) {
           loadedCount += await this.loadSingleTool(toolConfig);
         }
@@ -83,7 +92,7 @@ export class ToolRegistry {
       }
     }
 
-    log.info(`Loaded ${loadedCount} tools`);
+    log.info(`Loaded ${loadedCount} tools total`);
     return loadedCount;
   }
 
@@ -235,24 +244,37 @@ export class ToolRegistry {
   async executeTool(name: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
     const log = getLogger();
     const registered = this.tools.get(name);
-    if (!registered) return { content: `Error: Unknown tool '${name}'`, isError: true };
+    if (!registered) {
+      log.warn(`Tool not found: ${name}`);
+      return { content: `Error: Unknown tool '${name}'`, isError: true };
+    }
 
-    const { executor } = registered;
+    const { executor, config } = registered;
+    log.debug(`Tool executor type: ${executor.constructor.name}`);
+    log.debug(`Tool config type: ${config.type || "command"}`);
 
     try {
       executor.validateArguments(args);
+      log.debug(`Tool arguments validated: ${JSON.stringify(args)}`);
     } catch (e) {
-      return { content: `Validation error: ${(e as Error).message}`, isError: true };
+      const validationError = (e as Error).message;
+      log.warn(`Tool validation failed: ${validationError}`);
+      return { content: `Validation error: ${validationError}`, isError: true };
     }
 
     // Apply preprocessor (path normalization).
     const processedArgs = this.argPreprocessor(args);
+    if (JSON.stringify(args) !== JSON.stringify(processedArgs)) {
+      log.debug(`Path normalization applied: ${JSON.stringify(processedArgs)}`);
+    }
 
     try {
       return await executor.execute(processedArgs);
     } catch (e) {
-      log.error(`Error executing ${name}: ${e}`);
-      return { content: `Error: ${(e as Error).message}`, isError: true };
+      const execError = (e as Error).message;
+      log.error(`Tool execution error: ${execError}`);
+      log.debug(`Tool that failed: ${name}, executor: ${executor.constructor.name}`);
+      return { content: `Error: ${execError}`, isError: true };
     }
   }
 

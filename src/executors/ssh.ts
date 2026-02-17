@@ -22,9 +22,13 @@ export class SshExecutor implements ContainerExecutor {
   }): Promise<string> {
     const { host, command, user, shell = "/bin/bash", workingDir } = options;
     const log = getLogger();
+    const startTime = Date.now();
+
+    log.debug(`SSH: Connecting to ${host}, workingDir=${workingDir || "/"}, shell=${shell}`);
 
     // Determine the SSH user to connect as
     const sshUser = this.resolveSshUser(user);
+    log.debug(`SSH: User resolved to: ${sshUser || "default"}`);
 
     // Build the full command, optionally with working directory change
     let remoteCmd = command.join(" ");
@@ -35,7 +39,10 @@ export class SshExecutor implements ContainerExecutor {
     const envPrelude = this.buildDdevEnvPrelude(workingDir);
     if (envPrelude) {
       remoteCmd = `${envPrelude}${remoteCmd}`;
+      log.debug(`SSH: Adding DDEV env prelude`);
     }
+
+    log.debug(`SSH: Full remote command: ${remoteCmd.substring(0, 200)}${remoteCmd.length > 200 ? "..." : ""}`);
 
     // Quote the full command so bash -c receives it as a single string
     const escapedCmd = this.escapeShellCommand(remoteCmd);
@@ -55,7 +62,7 @@ export class SshExecutor implements ContainerExecutor {
       escapedCmd,
     ];
 
-    log.debug(`SSH Exec: ssh ${sshArgs.join(" ")}`);
+    log.debug(`SSH: Executing ssh ${sshDestination} ${shell} -c '<command>'`);
 
     return new Promise((resolve, reject) => {
       execFile(
@@ -63,11 +70,17 @@ export class SshExecutor implements ContainerExecutor {
         sshArgs,
         { maxBuffer: 10 * 1024 * 1024, timeout: 120_000 },
         (error, stdout, stderr) => {
+          const duration = Date.now() - startTime;
+          
           if (error) {
-            const cleanedError = this.extractErrorMessage(stderr?.trim() || error.message);
+            const cleanedError = (stderr?.trim() || error.message).trim();
+            log.error(`SSH: Command failed on ${host} (${duration}ms): ${cleanedError}`);
+            log.debug(`SSH: Raw stderr: ${stderr}`);
             reject(new Error(cleanedError));
             return;
           }
+          
+          log.info(`SSH: Command succeeded on ${host} (${duration}ms)`);
           resolve(stdout);
         },
       );
@@ -105,29 +118,6 @@ export class SshExecutor implements ContainerExecutor {
     const configPath = this.escapeShellCommand(`${baseDir}/.ddev/config.yaml`);
 
     return `if [ -f ${configPath} ]; then export $(awk -F'- ' '/- (DB_(HOST|NAME|USER|PASS)|HASH_SALT|ENVIRONMENT_NAME)=/ {print $2}' ${configPath} | xargs); fi; `;
-  }
-
-  /**
-   * Extract the most relevant error information from stderr.
-   * Removes file paths, line numbers, and stack traces, keeping only actionable error lines.
-   */
-  private extractErrorMessage(stderr: string): string {
-    const lines = stderr.split("\n");
-    const cleanedLines: string[] = [];
-
-    for (const line of lines) {
-      // Skip empty lines and common noise
-      if (!line.trim()) continue;
-      if (line.includes(".php in ") || line.includes("Stack trace:")) continue;
-      if (line.match(/^\s+#\d+/)) continue; // Skip stack trace lines (e.g. "  #0 Class::method()")
-      if (line.match(/at line \d+/i)) continue; // Skip "at line X" references
-      if (line.match(/^In .*\.php line \d+:/)) continue; // Skip file references
-
-      cleanedLines.push(line.trim());
-    }
-
-    // Return joined lines, or fall back to original if nothing cleaned up
-    return cleanedLines.join("\n").trim() || stderr;
   }
 }
 

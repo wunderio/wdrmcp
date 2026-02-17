@@ -152,46 +152,41 @@ export class McpProxyExecutor implements ToolExecutor {
     }
 
     const r = result as Record<string, unknown>;
+    
+    // Handle JSON-RPC result field — return raw data without wrapping
     if ("result" in r) {
       const res = r.result;
-      // Return structured response with metadata for cleaner agent parsing
-      const response = {
-        data: res,
-        type: this.getDataType(res),
-        status: "success"
-      };
-      return { content: JSON.stringify(response) };
+      return { content: typeof res === "string" ? res : JSON.stringify(res) };
     }
 
+    // Handle MCP-style content array
     const content = r.content;
     if (Array.isArray(content) && content.length > 0) {
       const textContent = (content[0] as Record<string, unknown>).text as string;
+      
+      // Try to parse JSON-escaped strings
+      if (textContent && typeof textContent === 'string') {
+        try {
+          const parsed = JSON.parse(textContent);
+          return { content: typeof parsed === 'string' ? parsed : JSON.stringify(parsed) };
+        } catch {
+          // Not JSON, return as-is
+          return { content: textContent };
+        }
+      }
+      
       return { content: textContent ?? JSON.stringify(result) };
     }
 
+    // Handle JSON-RPC error field
     if ("error" in r) {
       const err = r.error as Record<string, unknown>;
-      const response = {
-        error: err.message ?? String(err),
-        code: err.code ?? -1,
-        status: "error"
-      };
-      return { content: JSON.stringify(response), isError: true };
+      const message = err.message ?? String(err);
+      return { content: String(message), isError: true };
     }
 
-    const response = {
-      data: result,
-      type: this.getDataType(result),
-      status: "success"
-    };
-    return { content: JSON.stringify(response) };
-  }
-
-  /** Determine the type of data for metadata. */
-  private getDataType(value: unknown): string {
-    if (value === null) return "null";
-    if (Array.isArray(value)) return "array";
-    return typeof value;
+    // Fallback: return raw data as-is
+    return { content: typeof result === "string" ? result : JSON.stringify(result) };
   }
 }
 

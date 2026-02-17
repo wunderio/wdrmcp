@@ -53,12 +53,41 @@ export function createMcpServer(registry: ToolRegistry): McpServer {
       config.description ?? "Tool with no description",
       toZodShape(config.input_schema),
       async (args) => {
-        log.info(`Calling tool: ${toolName}`);
-        const result = await registry.executeTool(toolName, args as Record<string, unknown>);
-        return {
-          content: [{ type: "text" as const, text: result.content }],
-          isError: result.isError,
-        };
+        const startTime = Date.now();
+        log.info(`========== TOOL START: ${toolName} ==========`);
+        log.info(`Tool input arguments: ${JSON.stringify(args)}`);
+        log.debug(`Tool config: ${JSON.stringify(config)}`);
+        
+        try {
+          const result = await registry.executeTool(toolName, args as Record<string, unknown>);
+          const duration = Date.now() - startTime;
+          
+          if (result.isError) {
+            log.error(`TOOL RESULT (${duration}ms, ERROR): ${toolName}`);
+            log.info(`TOOL OUTPUT (error, ${result.content.length} chars):`);
+            log.info(result.content);
+          } else {
+            log.info(`TOOL RESULT (${duration}ms, SUCCESS): ${toolName}`);
+            log.info(`TOOL OUTPUT (${result.content.length} chars):`);
+            log.info(result.content);
+          }
+          log.info(`========== TOOL END: ${toolName} ==========`);
+          
+          return {
+            content: [{ type: "text" as const, text: result.content }],
+            isError: result.isError,
+          };
+        } catch (error) {
+          const duration = Date.now() - startTime;
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          log.error(`TOOL EXCEPTION (${duration}ms): ${toolName} - ${errorMsg}`);
+          log.error(`Exception stack: ${error instanceof Error ? error.stack : ""}`);
+          log.info(`========== TOOL END: ${toolName} (EXCEPTION) ==========`);
+          return {
+            content: [{ type: "text" as const, text: `Tool execution failed: ${errorMsg}` }],
+            isError: true,
+          };
+        }
       },
     );
   }

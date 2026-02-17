@@ -43,9 +43,11 @@ export class CommandToolExecutor implements ToolExecutor {
 
   async execute(args: Record<string, unknown>): Promise<ToolExecutionResult> {
     const log = getLogger();
+    const startTime = Date.now();
 
     // Merge with defaults.
     const mergedArgs: Record<string, unknown> = { ...this.defaultArgs, ...args };
+    log.debug(`Executing with args:`, mergedArgs);
 
     // Check disallowed commands.
     if (typeof mergedArgs.command === "string" && this.disallowedCommands.has(mergedArgs.command)) {
@@ -56,23 +58,27 @@ export class CommandToolExecutor implements ToolExecutor {
     // Substitute arguments into template.
     let cmdStr: string;
     try {
+      log.debug(`Command template: ${this.commandTemplate}`);
       cmdStr = this.commandTemplate.replace(/\{(\w+)\}/g, (_match, key) => {
         if (key in mergedArgs) return String(mergedArgs[key]);
         throw new Error(`Missing required argument: ${key}`);
       });
+      log.debug(`Rendered command: ${cmdStr}`);
     } catch (e) {
+      log.warn(`Argument substitution failed: ${(e as Error).message}`);
       return { content: `Error: ${(e as Error).message}`, isError: true };
     }
 
     // Validate rendered command against rules.
     const ruleError = this.checkRules(cmdStr);
     if (ruleError) {
+      log.warn(`Validation failed: ${ruleError}`);
       return { content: `Validation error: ${ruleError}`, isError: true };
     }
 
     // Execute via injected executor (SSH or other).
     try {
-      log.info(`EXEC: ${this.host} via ${this.executor.constructor.name}`);
+      log.info(`EXEC: ${this.host} via ${this.executor.constructor.name}, shell: ${this.shell}, workdir: ${this.workingDir || "default"}`);
       const output = await this.executor.execute({
         host: this.host,
         command: [cmdStr],
@@ -80,9 +86,21 @@ export class CommandToolExecutor implements ToolExecutor {
         shell: this.shell,
         workingDir: this.workingDir,
       });
-      return { content: output.trim() };
+      const trimmedOutput = output.trim();
+      const duration = Date.now() - startTime;
+      log.info(`EXEC SUCCESS: ${this.host} (${duration}ms)`);
+      
+      // Add success message for empty outputs
+      if (trimmedOutput.length === 0) {
+        return { content: "Command completed successfully (no output)" };
+      }
+      
+      return { content: trimmedOutput };
     } catch (e) {
+      const duration = Date.now() - startTime;
       const errorMsg = (e as Error).message;
+      log.error(`EXEC FAILED: ${this.host} (${duration}ms), error: ${errorMsg}`);
+      log.debug(`Failed command: ${cmdStr}`);
       return { 
         content: `Command failed: ${cmdStr.split("&&")[0].trim()}\nError: ${errorMsg}`, 
         isError: true 
