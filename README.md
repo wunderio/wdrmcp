@@ -120,7 +120,6 @@ tools:
     tool_prefix: "remote_"
     timeout: 30
     auth_token: "${REMOTE_MCP_TOKEN}"
-    verify_ssl: true
 ```
 
 ## Architecture

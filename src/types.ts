@@ -59,7 +59,6 @@ export interface McpServerToolConfig extends BaseToolConfig {
   auth_password?: string;
   auth_token?: string;
   auth_token_basic?: boolean;
-  verify_ssl?: boolean;
   expose_remote_tools?: boolean;
   init_timeout?: number;
 }

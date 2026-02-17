@@ -3,9 +3,11 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import dotenv from "dotenv";
 import type { BridgeConfig } from "./types.js";
 
-const DEFAULT_SSH_USER_FILE = "/workspace/.ddev/.agents/.env";
+const DEFAULT_SSH_USER_FILE = "/workspace/.ddev/.agents/.runtime.env";
 
 function readSshUserFromFile(filePath: string): string | undefined {
   if (!existsSync(filePath)) {
@@ -22,6 +24,18 @@ function readSshUserFromFile(filePath: string): string | undefined {
   }
 
   return undefined;
+}
+
+function loadEnvFileIfExists(filePath: string): void {
+  if (!existsSync(filePath)) {
+    return;
+  }
+  dotenv.config({ path: filePath, override: false });
+}
+
+function loadProjectEnvFromToolsConfigPath(toolsConfigPath: string): void {
+  const toolsConfigEnv = resolve(toolsConfigPath, ".env");
+  loadEnvFileIfExists(toolsConfigEnv);
 }
 
 function printUsage(): void {
@@ -89,6 +103,10 @@ export function parseArgs(argv: string[]): BridgeConfig {
     printUsage();
     process.exit(1);
   }
+
+  // Load project .env early so placeholders in tools config can resolve
+  // without requiring shell-level exports.
+  loadProjectEnvFromToolsConfigPath(toolsConfigPath);
 
   // SSH user resolution strategy:
   // 1. Primary: DDEV_SSH_USER env var (explicit override)

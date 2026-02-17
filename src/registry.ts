@@ -80,7 +80,6 @@ const McpServerToolConfigSchema = z.object({
   auth_password: z.string().optional(),
   auth_token: z.string().optional(),
   auth_token_basic: z.boolean().optional(),
-  verify_ssl: z.boolean().optional(),
   expose_remote_tools: z.boolean().optional(),
   init_timeout: z.number().int().positive().optional(),
 }).strict();
@@ -274,8 +273,17 @@ export class ToolRegistry {
         const bridgeVars = { DDEV_PROJECT: this.config.ddevProject };
 
         const sshTarget = resolveEnvVars(cfg.ssh_target, envVars, bridgeVars);
+        this.ensureNoUnresolvedEnvPlaceholders(sshTarget, name, "ssh_target");
+
         const sshUser = cfg.ssh_user ? resolveEnvVars(cfg.ssh_user, envVars, bridgeVars) : undefined;
+        if (sshUser) {
+          this.ensureNoUnresolvedEnvPlaceholders(sshUser, name, "ssh_user");
+        }
+
         const workingDir = cfg.working_dir ? resolveEnvVars(cfg.working_dir, envVars, bridgeVars) : undefined;
+        if (workingDir) {
+          this.ensureNoUnresolvedEnvPlaceholders(workingDir, name, "working_dir");
+        }
 
         return new CommandToolExecutor({
           commandTemplate: cfg.command_template,
@@ -304,12 +312,23 @@ export class ToolRegistry {
         const authUsername = cfg.auth_username
           ? resolveEnvVars(cfg.auth_username, envVars, bridgeVars)
           : undefined;
+        if (authUsername) {
+          this.ensureNoUnresolvedEnvPlaceholders(authUsername, name, "auth_username");
+        }
+
         const authPassword = cfg.auth_password
           ? resolveEnvVars(cfg.auth_password, envVars, bridgeVars)
           : undefined;
+        if (authPassword) {
+          this.ensureNoUnresolvedEnvPlaceholders(authPassword, name, "auth_password");
+        }
+
         const authToken = cfg.auth_token
           ? resolveEnvVars(cfg.auth_token, envVars, bridgeVars)
           : undefined;
+        if (authToken) {
+          this.ensureNoUnresolvedEnvPlaceholders(authToken, name, "auth_token");
+        }
 
         if ((cfg.auth_token && !cfg.auth_token.includes("${")) ||
             (cfg.auth_password && !cfg.auth_password.includes("${"))) {
@@ -324,7 +343,6 @@ export class ToolRegistry {
           authPassword,
           authToken,
           authTokenBasic: cfg.auth_token_basic,
-          verifySsl: cfg.verify_ssl,
         });
       }
 
@@ -415,5 +433,16 @@ export class ToolRegistry {
     };
 
     return normalize(value) as Record<string, unknown>;
+  }
+
+  private ensureNoUnresolvedEnvPlaceholders(value: string, toolName: string, fieldName: string): void {
+    const unresolved = [...value.matchAll(/\$\{(\w+)\}/g)].map((match) => match[1]);
+    if (unresolved.length === 0) {
+      return;
+    }
+
+    throw new Error(
+      `Tool ${toolName}: missing required environment variable(s) for ${fieldName}: ${unresolved.join(", ")}`,
+    );
   }
 }

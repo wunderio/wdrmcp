@@ -24,7 +24,6 @@ export interface McpProxyOptions {
   authPassword?: string;
   authToken?: string;
   authTokenBasic?: boolean;
-  verifySsl?: boolean;
 }
 
 export class McpProxyExecutor implements ToolExecutor {
@@ -39,10 +38,6 @@ export class McpProxyExecutor implements ToolExecutor {
     this.forwardArgs = options.forwardArgs ?? true;
     this.timeout = (options.timeout ?? 10) * 1000;
     this.headers = { "Content-Type": "application/json" };
-
-    if (options.verifySsl === false) {
-      getLogger().warn("verify_ssl=false is not supported; TLS certificate verification remains enabled by Node.js fetch defaults");
-    }
 
     if (options.authToken) {
       if (options.authTokenBasic) {
@@ -194,6 +189,7 @@ export class McpProxyExecutor implements ToolExecutor {
     // Fallback: return raw data as-is
     return { content: typeof result === "string" ? result : JSON.stringify(result) };
   }
+
 }
 
 /**
