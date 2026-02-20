@@ -63,7 +63,15 @@ export class McpProxyExecutor implements ToolExecutor {
     }
   }
 
-  /** Fetch available tools from the remote MCP server via tools/list. */
+  /**
+   * Fetch available tools from the remote MCP server via tools/list.
+   *
+   * Uses client.listTools() when the SDK is connected (required for servers
+   * that need the initialize handshake). Falls back to raw JSON-RPC otherwise.
+   * Note: client.listTools() caches outputSchema validators which may cause
+   * callTool() to reject valid responses from servers that return content
+   * instead of structuredContent — callTool() handles this with a retry.
+   */
   async fetchRemoteTools(): Promise<RemoteToolDefinition[]> {
     const log = getLogger();
     log.info(`Fetching remote tools from ${this.serverUrl}`);
@@ -78,14 +86,14 @@ export class McpProxyExecutor implements ToolExecutor {
           description: t.description,
           inputSchema: t.inputSchema as Record<string, unknown>,
         }));
-        log.info(`Fetched ${tools.length} tools from ${this.serverUrl}`);
+        log.info(`Fetched ${tools.length} tools via SDK from ${this.serverUrl}`);
         return tools;
       }
 
       // Fallback: raw JSON-RPC
       const result = await this.rawFetchRpc("tools/list", {});
       const tools = this.extractToolsFromRawResponse(result);
-      log.info(`Fetched ${tools.length} tools from ${this.serverUrl}`);
+      log.info(`Fetched ${tools.length} tools via raw JSON-RPC from ${this.serverUrl}`);
       return tools;
     } catch (e) {
       log.error(`Failed to fetch tools from ${this.serverUrl}: ${e}`);
@@ -106,16 +114,31 @@ export class McpProxyExecutor implements ToolExecutor {
     args: Record<string, unknown>,
     toolName?: string,
   ): Promise<ToolExecutionResult> {
+    const log = getLogger();
+
     try {
       await this.ensureConnected();
 
-      // SDK path: use client.callTool for named tool calls
+      // SDK path: use client.callTool for named tool calls.
+      // Falls back to raw JSON-RPC on outputSchema validation errors
+      // (some servers declare outputSchema but return content instead of structuredContent).
       if (this.sdkAvailable && this.client && toolName) {
-        const result = await this.client.callTool({
-          name: toolName,
-          arguments: args,
-        });
-        return this.mapSdkResult(result);
+        try {
+          const result = await this.client.callTool({
+            name: toolName,
+            arguments: args,
+          });
+          return this.mapSdkResult(result);
+        } catch (sdkError) {
+          const msg = (sdkError as Error).message ?? "";
+          if (msg.includes("output schema") || msg.includes("structured content")) {
+            if (log.isVerbose()) {
+              log.debug(`SDK outputSchema mismatch for ${toolName}, using raw JSON-RPC fallback`);
+            }
+          } else {
+            throw sdkError;
+          }
+        }
       }
 
       // Fallback: raw JSON-RPC
@@ -139,7 +162,7 @@ export class McpProxyExecutor implements ToolExecutor {
       if ((e as Error).name === "AbortError") {
         return { content: `Request timeout after ${this.timeout / 1000}s`, isError: true };
       }
-      getLogger().error(`MCP proxy error: ${e}`);
+      log.error(`MCP proxy error: ${e}`);
       return { content: `Error: ${(e as Error).message}`, isError: true };
     }
   }
@@ -314,31 +337,6 @@ export class McpProxyExecutor implements ToolExecutor {
 
     const r = result as Record<string, unknown>;
 
-    // Handle JSON-RPC result field — return raw data without wrapping
-    if ("result" in r) {
-      const res = r.result;
-      return { content: typeof res === "string" ? res : JSON.stringify(res) };
-    }
-
-    // Handle MCP-style content array
-    const content = r.content;
-    if (Array.isArray(content) && content.length > 0) {
-      const textContent = (content[0] as Record<string, unknown>).text as string;
-
-      // Try to parse JSON-escaped strings
-      if (textContent && typeof textContent === "string") {
-        try {
-          const parsed = JSON.parse(textContent);
-          return { content: typeof parsed === "string" ? parsed : JSON.stringify(parsed) };
-        } catch {
-          // Not JSON, return as-is
-          return { content: textContent };
-        }
-      }
-
-      return { content: textContent ?? JSON.stringify(result) };
-    }
-
     // Handle JSON-RPC error field
     if ("error" in r) {
       const err = r.error as Record<string, unknown>;
@@ -346,8 +344,37 @@ export class McpProxyExecutor implements ToolExecutor {
       return { content: String(message), isError: true };
     }
 
+    // Unwrap JSON-RPC result envelope: {"jsonrpc":"2.0","result":{...},"id":1}
+    // The actual MCP response is inside r.result.
+    const payload = ("result" in r && typeof r.result === "object" && r.result !== null)
+      ? r.result as Record<string, unknown>
+      : r;
+
+    // Handle MCP-style content array
+    const content = payload.content;
+    if (Array.isArray(content) && content.length > 0) {
+      const texts: string[] = [];
+      for (const block of content) {
+        const b = block as Record<string, unknown>;
+        if (b.type === "text" && typeof b.text === "string") {
+          texts.push(b.text);
+        } else {
+          texts.push(JSON.stringify(b));
+        }
+      }
+      const text = texts.join("\n");
+      const isError = payload.isError === true ? true : undefined;
+      return { content: text, isError };
+    }
+
+    // Handle plain result (string or object)
+    if ("result" in r) {
+      const res = r.result;
+      return { content: typeof res === "string" ? res : JSON.stringify(res) };
+    }
+
     // Fallback: return raw data as-is
-    return { content: typeof result === "string" ? result : JSON.stringify(result) };
+    return { content: JSON.stringify(result) };
   }
 }
 
