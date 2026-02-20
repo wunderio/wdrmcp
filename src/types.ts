@@ -9,6 +9,13 @@ export type ToolType = "command" | "mcp_server";
 export interface ValidationRule {
   pattern: string;
   message: string;
+  field?: string;
+}
+
+/** A disallowed command pattern with optional suggested alternative. */
+export interface DisallowedCommand {
+  pattern: string;
+  suggested_tool?: string;
 }
 
 /** Base tool configuration shared by all tool types. */
@@ -32,6 +39,7 @@ export interface JsonSchemaProperty {
   description?: string;
   enum?: string[];
   default?: unknown;
+  items?: JsonSchemaProperty;
 }
 
 /** Configuration for a command-type tool (SSH execution). */
@@ -42,8 +50,8 @@ export interface CommandToolConfig extends BaseToolConfig {
   ssh_user?: string;   // e.g. "${DDEV_SSH_USER}", defaults to current user
   working_dir?: string; // Optional working directory for execution
   shell?: string;
-  default_args?: Record<string, string>;
-  disallowed_commands?: string[];
+  default_args?: Record<string, string | string[]>;
+  disallowed_commands?: (string | DisallowedCommand)[];
   validation_rules?: ValidationRule[];
   max_arg_length?: number;
 }

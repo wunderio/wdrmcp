@@ -4,7 +4,7 @@
  */
 
 import { getLogger } from "../logger.js";
-import type { ToolExecutionResult, ToolExecutor, ValidationRule, ContainerExecutor } from "../types.js";
+import type { ToolExecutionResult, ToolExecutor, ValidationRule, DisallowedCommand, ContainerExecutor } from "../types.js";
 
 export interface CommandExecutorOptions {
   commandTemplate: string;
@@ -13,8 +13,8 @@ export interface CommandExecutorOptions {
   sshUser?: string;
   shell?: string;
   workingDir?: string;
-  defaultArgs?: Record<string, string>;
-  disallowedCommands?: string[];
+  defaultArgs?: Record<string, string | string[]>;
+  disallowedCommands?: (string | DisallowedCommand)[];
   validationRules?: ValidationRule[];
   maxArgLength?: number;
 }
@@ -26,8 +26,8 @@ export class CommandToolExecutor implements ToolExecutor {
   private readonly sshUser?: string;
   private readonly shell: string;
   private readonly workingDir?: string;
-  private readonly defaultArgs: Record<string, string>;
-  private readonly disallowedCommands: Set<string>;
+  private readonly defaultArgs: Record<string, string | string[]>;
+  private readonly disallowedCommands: DisallowedCommand[];
   private readonly validationRules: ValidationRule[];
   private readonly maxArgLength: number;
 
@@ -39,7 +39,9 @@ export class CommandToolExecutor implements ToolExecutor {
     this.shell = options.shell ?? "/bin/bash";
     this.workingDir = options.workingDir;
     this.defaultArgs = options.defaultArgs ?? {};
-    this.disallowedCommands = new Set(options.disallowedCommands ?? []);
+    this.disallowedCommands = (options.disallowedCommands ?? []).map((d) =>
+      typeof d === "string" ? { pattern: d } : d,
+    );
     this.validationRules = options.validationRules ?? [];
     this.maxArgLength = options.maxArgLength ?? 4096;
   }
@@ -56,9 +58,15 @@ export class CommandToolExecutor implements ToolExecutor {
 
     // Check disallowed patterns against all provided string arguments.
     for (const value of Object.values(mergedArgs)) {
-      if (typeof value === "string" && this.matchesDisallowed(value)) {
-        log.warn(`Blocked disallowed command in arguments`);
-        return { content: "Error: Command contains blocked pattern", isError: true };
+      const strings: string[] = Array.isArray(value)
+        ? (value as unknown[]).filter((v): v is string => typeof v === "string")
+        : typeof value === "string" ? [value] : [];
+      for (const str of strings) {
+        const blocked = this.matchesDisallowed(str);
+        if (blocked) {
+          log.warn(`Blocked disallowed command in arguments`);
+          return { content: this.formatBlockedMessage(blocked), isError: true };
+        }
       }
     }
 
@@ -69,9 +77,20 @@ export class CommandToolExecutor implements ToolExecutor {
         log.debug(`Command template: ${this.commandTemplate}`);
       }
       cmdStr = this.commandTemplate.replace(/\{(\w+)\}/g, (_match, key) => {
-        if (key in mergedArgs) return this.escapeShellArg(String(mergedArgs[key]));
+        if (key in mergedArgs) {
+          const raw = mergedArgs[key];
+          // Array values: escape each element individually, join with spaces.
+          if (Array.isArray(raw)) {
+            const parts = (raw as unknown[]).map(String).filter(Boolean);
+            return parts.map((p) => this.escapeShellArg(p)).join(" ");
+          }
+          const val = String(raw);
+          return val === "" ? "" : this.escapeShellArg(val);
+        }
         throw new Error(`Missing required argument: ${key}`);
       });
+      // Collapse extra whitespace left by empty placeholders.
+      cmdStr = cmdStr.replace(/  +/g, " ").trim();
       if (log.isVerbose()) {
         log.debug(`Rendered command: ${cmdStr}`);
       }
@@ -87,9 +106,10 @@ export class CommandToolExecutor implements ToolExecutor {
       return { content: `Validation error: ${ruleError}`, isError: true };
     }
 
-    if (this.matchesDisallowed(cmdStr)) {
+    const blocked = this.matchesDisallowed(cmdStr);
+    if (blocked) {
       log.warn(`Blocked disallowed command in rendered template`);
-      return { content: "Error: Command contains blocked pattern", isError: true };
+      return { content: this.formatBlockedMessage(blocked), isError: true };
     }
 
     // Execute via injected executor (SSH or other).
@@ -129,17 +149,19 @@ export class CommandToolExecutor implements ToolExecutor {
   validateArguments(args: Record<string, unknown>): void {
     // Check validation rules and max-length against each string argument value.
     for (const [key, value] of Object.entries(args)) {
-      if (typeof value !== "string") {
-        continue;
-      }
+      const strings: string[] = Array.isArray(value)
+        ? (value as unknown[]).filter((v): v is string => typeof v === "string")
+        : typeof value === "string" ? [value] : [];
 
-      if (value.length > this.maxArgLength) {
-        throw new Error(`Argument '${key}' exceeds max length of ${this.maxArgLength}`);
-      }
+      for (const str of strings) {
+        if (str.length > this.maxArgLength) {
+          throw new Error(`Argument '${key}' exceeds max length of ${this.maxArgLength}`);
+        }
 
-      const ruleError = this.checkRules(value);
-      if (ruleError) {
-        throw new Error(ruleError);
+        const ruleError = this.checkRules(str, key);
+        if (ruleError) {
+          throw new Error(ruleError);
+        }
       }
     }
 
@@ -155,9 +177,18 @@ export class CommandToolExecutor implements ToolExecutor {
     }
   }
 
-  /** Check validation rules against a value. Returns error message or null. */
-  private checkRules(value: string): string | null {
+  /**
+   * Check validation rules against a value. Returns error message or null.
+   * When fieldName is provided, only rules targeting that field (or all fields) apply.
+   * When fieldName is omitted (rendered command check), only non-field-specific rules apply.
+   */
+  private checkRules(value: string, fieldName?: string): string | null {
     for (const rule of this.validationRules) {
+      // Field-specific rules only match the named field.
+      // Non-field rules match everything (individual args + rendered command).
+      if (rule.field) {
+        if (fieldName !== rule.field) continue;
+      }
       if (rule.pattern && new RegExp(rule.pattern).test(value)) {
         return rule.message ?? `Validation failed for pattern: ${rule.pattern}`;
       }
@@ -169,23 +200,24 @@ export class CommandToolExecutor implements ToolExecutor {
     return `'${value.replace(/'/g, `'"'"'`)}'`;
   }
 
-  private matchesDisallowed(value: string): boolean {
-    for (const disallowed of this.disallowedCommands) {
-      if (!disallowed) {
-        continue;
-      }
+  private matchesDisallowed(value: string): DisallowedCommand | null {
+    for (const entry of this.disallowedCommands) {
+      const pat = entry.pattern?.trim();
+      if (!pat) continue;
 
-      const trimmed = disallowed.trim();
-      if (!trimmed) {
-        continue;
-      }
-
-      const escaped = trimmed.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const pattern = new RegExp(`(?:^|[\\s;&|()])${escaped}(?:$|[\\s;&|()])`, "i");
-      if (pattern.test(value)) {
-        return true;
+      const escaped = pat.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const regex = new RegExp(`(?:^|[\\s;&|()])${escaped}(?:$|[\\s;&|()])`, "i");
+      if (regex.test(value)) {
+        return entry;
       }
     }
-    return false;
+    return null;
+  }
+
+  private formatBlockedMessage(match: DisallowedCommand): string {
+    const base = `Error: Command contains blocked pattern '${match.pattern}'`;
+    return match.suggested_tool
+      ? `${base}. Use the '${match.suggested_tool}' tool instead.`
+      : base;
   }
 }

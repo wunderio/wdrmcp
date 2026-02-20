@@ -6,6 +6,8 @@
  *   name, so the registry doesn't need special-case logic for proxied tools.
  */
 
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { getLogger } from "../logger.js";
 import type { ToolExecutionResult, ToolExecutor } from "../types.js";
 
@@ -31,13 +33,20 @@ export class McpProxyExecutor implements ToolExecutor {
   private readonly forwardArgs: boolean;
   private readonly timeout: number;
   private readonly headers: Record<string, string>;
-  private requestId = 1;
+  private client: Client | null = null;
+  /** null = untried, true = SDK connected, false = fallback to raw fetch */
+  private sdkAvailable: boolean | null = null;
+  private connectPromise: Promise<void> | null = null;
 
   constructor(options: McpProxyOptions) {
     this.serverUrl = options.serverUrl;
     this.forwardArgs = options.forwardArgs ?? true;
     this.timeout = (options.timeout ?? 10) * 1000;
-    this.headers = { "Content-Type": "application/json" };
+    this.headers = {
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+      "User-Agent": "wdrmcp/0.1",
+    };
 
     if (options.authToken) {
       if (options.authTokenBasic) {
@@ -60,20 +69,22 @@ export class McpProxyExecutor implements ToolExecutor {
     log.info(`Fetching remote tools from ${this.serverUrl}`);
 
     try {
-      const result = await this.rpc("tools/list", {});
+      await this.ensureConnected();
 
-      let tools: RemoteToolDefinition[];
-      if (Array.isArray(result)) {
-        tools = result;
-      } else if (typeof result === "object" && result !== null) {
-        const r = result as Record<string, unknown>;
-        const raw = r.tools ?? (r.result as Record<string, unknown>)?.tools ?? [];
-        tools = (Array.isArray(raw) ? raw : []) as RemoteToolDefinition[];
-      } else {
-        log.warn(`Unexpected response format from ${this.serverUrl}`);
-        return [];
+      if (this.sdkAvailable && this.client) {
+        const result = await this.client.listTools();
+        const tools: RemoteToolDefinition[] = result.tools.map((t) => ({
+          name: t.name,
+          description: t.description,
+          inputSchema: t.inputSchema as Record<string, unknown>,
+        }));
+        log.info(`Fetched ${tools.length} tools from ${this.serverUrl}`);
+        return tools;
       }
 
+      // Fallback: raw JSON-RPC
+      const result = await this.rawFetchRpc("tools/list", {});
+      const tools = this.extractToolsFromRawResponse(result);
       log.info(`Fetched ${tools.length} tools from ${this.serverUrl}`);
       return tools;
     } catch (e) {
@@ -96,21 +107,34 @@ export class McpProxyExecutor implements ToolExecutor {
     toolName?: string,
   ): Promise<ToolExecutionResult> {
     try {
-      let payload: Record<string, unknown>;
-      if (toolName) {
-        payload = { method: "tools/call", params: { name: toolName, arguments: args } };
-      } else if (typeof args.method === "string") {
-        payload = { method: args.method, params: (args.params as Record<string, unknown>) ?? {} };
-      } else {
-        payload = this.forwardArgs ? args : {};
+      await this.ensureConnected();
+
+      // SDK path: use client.callTool for named tool calls
+      if (this.sdkAvailable && this.client && toolName) {
+        const result = await this.client.callTool({
+          name: toolName,
+          arguments: args,
+        });
+        return this.mapSdkResult(result);
       }
 
-      const result = await this.rpc(
-        payload.method as string,
-        payload.params as Record<string, unknown>,
-      );
+      // Fallback: raw JSON-RPC
+      let method: string;
+      let params: Record<string, unknown>;
 
-      return this.parseResponse(result);
+      if (toolName) {
+        method = "tools/call";
+        params = { name: toolName, arguments: args };
+      } else if (typeof args.method === "string") {
+        method = args.method;
+        params = (args.params as Record<string, unknown>) ?? {};
+      } else {
+        method = "tools/call";
+        params = this.forwardArgs ? args : {};
+      }
+
+      const result = await this.rawFetchRpc(method, params);
+      return this.parseRawResponse(result);
     } catch (e) {
       if ((e as Error).name === "AbortError") {
         return { content: `Request timeout after ${this.timeout / 1000}s`, isError: true };
@@ -124,36 +148,172 @@ export class McpProxyExecutor implements ToolExecutor {
     // Remote servers handle their own validation.
   }
 
-  /** Send a JSON-RPC request to the remote server. */
-  private async rpc(method: string, params: Record<string, unknown>): Promise<unknown> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeout);
-    const id = this.requestId++;
+  /**
+   * Lazily connect to the remote server via MCP SDK.
+   * On failure, sets sdkAvailable=false so callers fall back to raw fetch.
+   * Deduplicates concurrent connection attempts.
+   */
+  private async ensureConnected(): Promise<void> {
+    if (this.sdkAvailable !== null) {
+      return;
+    }
+
+    if (this.connectPromise) {
+      return this.connectPromise;
+    }
+
+    this.connectPromise = this.doConnect();
+    try {
+      await this.connectPromise;
+    } finally {
+      this.connectPromise = null;
+    }
+  }
+
+  private async doConnect(): Promise<void> {
+    const log = getLogger();
 
     try {
+      const { Authorization, ...rest } = this.headers;
+      const requestHeaders: Record<string, string> = { ...rest };
+      if (Authorization) {
+        requestHeaders["Authorization"] = Authorization;
+      }
+
+      const transport = new StreamableHTTPClientTransport(
+        new URL(this.serverUrl),
+        {
+          requestInit: {
+            headers: requestHeaders,
+          },
+        },
+      );
+
+      const client = new Client(
+        { name: "wdrmcp", version: "0.1" },
+        { capabilities: {} },
+      );
+
+      await client.connect(transport);
+
+      this.client = client;
+      this.sdkAvailable = true;
+
+      if (log.isVerbose()) {
+        const serverInfo = client.getServerVersion();
+        log.debug(
+          `Connected to MCP server at ${this.serverUrl}${serverInfo ? ` (${serverInfo.name} ${serverInfo.version})` : ""}`,
+        );
+      }
+    } catch (e) {
+      this.sdkAvailable = false;
+      if (log.isVerbose()) {
+        log.debug(
+          `MCP SDK connect failed for ${this.serverUrl}; falling back to raw JSON-RPC: ${e}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Simplified fallback for non-MCP servers: plain JSON-RPC 2.0 POST.
+   * No session tracking, no SSE parsing, no notifications.
+   */
+  private async rawFetchRpc(method: string, params: Record<string, unknown>): Promise<unknown> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeout);
+
+    try {
+      const payload = {
+        jsonrpc: "2.0",
+        method,
+        params,
+        id: 1,
+      };
+
       const response = await fetch(this.serverUrl, {
         method: "POST",
         headers: this.headers,
-        body: JSON.stringify({ jsonrpc: "2.0", method, params, id }),
+        body: JSON.stringify(payload),
         signal: controller.signal,
       });
+
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        const errorText = await response.text();
+        const compactError = errorText.replace(/\s+/g, " ").trim();
+        const suffix = compactError ? ` - ${compactError}` : "";
+        throw new Error(`HTTP ${response.status}: ${response.statusText}${suffix}`);
       }
-      return response.json();
+
+      const raw = await response.text();
+      if (!raw) {
+        return {};
+      }
+
+      try {
+        return JSON.parse(raw);
+      } catch {
+        return raw;
+      }
     } finally {
       clearTimeout(timer);
     }
   }
 
-  /** Parse a JSON-RPC response into a ToolExecutionResult. */
-  private parseResponse(result: unknown): ToolExecutionResult {
+  /** Map SDK CallToolResult to project's ToolExecutionResult. */
+  private mapSdkResult(result: Awaited<ReturnType<Client["callTool"]>>): ToolExecutionResult {
+    const content = result.content;
+    if (!Array.isArray(content) || content.length === 0) {
+      return { content: "", isError: result.isError === true ? true : undefined };
+    }
+
+    // Extract text from content blocks
+    const texts: string[] = [];
+    for (const block of content) {
+      if (block.type === "text") {
+        texts.push(block.text);
+      } else {
+        texts.push(JSON.stringify(block));
+      }
+    }
+
+    let text = texts.join("\n");
+
+    // Try to parse JSON-escaped strings (matching previous behavior)
+    try {
+      const parsed = JSON.parse(text);
+      text = typeof parsed === "string" ? parsed : JSON.stringify(parsed);
+    } catch {
+      // Not JSON, use as-is
+    }
+
+    return { content: text, isError: result.isError === true ? true : undefined };
+  }
+
+  /** Extract tool definitions from a raw JSON-RPC response. */
+  private extractToolsFromRawResponse(result: unknown): RemoteToolDefinition[] {
+    if (Array.isArray(result)) {
+      return result as RemoteToolDefinition[];
+    }
+
+    if (typeof result === "object" && result !== null) {
+      const r = result as Record<string, unknown>;
+      const raw = r.tools ?? (r.result as Record<string, unknown>)?.tools ?? [];
+      return (Array.isArray(raw) ? raw : []) as RemoteToolDefinition[];
+    }
+
+    getLogger().warn(`Unexpected response format from ${this.serverUrl}`);
+    return [];
+  }
+
+  /** Parse a raw JSON-RPC response into a ToolExecutionResult. */
+  private parseRawResponse(result: unknown): ToolExecutionResult {
     if (typeof result !== "object" || result === null || Array.isArray(result)) {
       return { content: typeof result === "string" ? result : JSON.stringify(result) };
     }
 
     const r = result as Record<string, unknown>;
-    
+
     // Handle JSON-RPC result field — return raw data without wrapping
     if ("result" in r) {
       const res = r.result;
@@ -164,18 +324,18 @@ export class McpProxyExecutor implements ToolExecutor {
     const content = r.content;
     if (Array.isArray(content) && content.length > 0) {
       const textContent = (content[0] as Record<string, unknown>).text as string;
-      
+
       // Try to parse JSON-escaped strings
-      if (textContent && typeof textContent === 'string') {
+      if (textContent && typeof textContent === "string") {
         try {
           const parsed = JSON.parse(textContent);
-          return { content: typeof parsed === 'string' ? parsed : JSON.stringify(parsed) };
+          return { content: typeof parsed === "string" ? parsed : JSON.stringify(parsed) };
         } catch {
           // Not JSON, return as-is
           return { content: textContent };
         }
       }
-      
+
       return { content: textContent ?? JSON.stringify(result) };
     }
 
@@ -189,7 +349,6 @@ export class McpProxyExecutor implements ToolExecutor {
     // Fallback: return raw data as-is
     return { content: typeof result === "string" ? result : JSON.stringify(result) };
   }
-
 }
 
 /**

@@ -14,13 +14,17 @@ function readSshUserFromFile(filePath: string): string | undefined {
     return undefined;
   }
 
-  const raw = readFileSync(filePath, "utf-8");
-  for (const line of raw.split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith("DDEV_SSH_USER=")) {
-      const value = trimmed.slice("DDEV_SSH_USER=".length).trim();
-      return value || undefined;
+  try {
+    const raw = readFileSync(filePath, "utf-8");
+    for (const line of raw.split("\n")) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith("DDEV_SSH_USER=")) {
+        const value = trimmed.slice("DDEV_SSH_USER=".length).trim();
+        return value || undefined;
+      }
     }
+  } catch {
+    return undefined;
   }
 
   return undefined;

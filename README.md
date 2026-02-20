@@ -8,7 +8,7 @@ Built with the [official MCP TypeScript SDK](https://github.com/modelcontextprot
 
 - **YAML-driven tool definitions** — define tools declaratively, no code changes needed
 - **Docker container execution** — run commands in Docker containers with security validation
-- **MCP server proxying** — proxy tool calls to remote MCP servers via HTTP JSON-RPC
+- **MCP server proxying** — proxy tool calls to remote MCP servers via HTTP JSON-RPC / Streamable HTTP MCP
 - **Dynamic tool discovery** — automatically fetch and expose tools from remote MCP servers
 - **Security** — container ownership validation, command injection prevention, argument validation
 - **DDEV integration** — built-in support for DDEV container naming and project scoping
@@ -121,6 +121,10 @@ tools:
     timeout: 30
     auth_token: "${REMOTE_MCP_TOKEN}"
 ```
+
+  Notes:
+  - `wdrmcp` supports both plain JSON-RPC HTTP MCP endpoints and Streamable HTTP MCP endpoints.
+  - For Streamable HTTP servers, `wdrmcp` performs `initialize` and `notifications/initialized`, keeps `mcp-session-id`, and sends `Accept: application/json, text/event-stream`.
 
 ## Architecture
 

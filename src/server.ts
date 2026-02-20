@@ -19,7 +19,7 @@ function toZod(prop: JsonSchemaProperty): z.ZodTypeAny {
       case "string": return prop.enum ? z.enum(prop.enum as [string, ...string[]]) : z.string();
       case "number": case "integer": return z.number();
       case "boolean": return z.boolean();
-      case "array": return z.array(z.unknown());
+      case "array": return z.array(prop.items ? toZod(prop.items) : z.unknown());
       case "object": return z.record(z.unknown());
       default: return z.unknown();
     }

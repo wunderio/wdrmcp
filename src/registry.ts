@@ -34,6 +34,7 @@ import type {
 const ValidationRuleSchema = z.object({
   pattern: z.string(),
   message: z.string().optional(),
+  field: z.string().optional(),
 }).strict();
 
 const JsonSchemaPropertySchema: z.ZodType = z.lazy(() => z.object({
@@ -41,6 +42,7 @@ const JsonSchemaPropertySchema: z.ZodType = z.lazy(() => z.object({
   description: z.string().optional(),
   enum: z.array(z.string()).optional(),
   default: z.unknown().optional(),
+  items: z.lazy(() => JsonSchemaPropertySchema).optional(),
 }).strict());
 
 const JsonSchemaSchema: z.ZodType = z.lazy(() => z.object({
@@ -60,8 +62,11 @@ const CommandToolConfigSchema = z.object({
   ssh_user: z.string().optional(),
   working_dir: z.string().optional(),
   shell: z.string().optional(),
-  default_args: z.record(z.string()).optional(),
-  disallowed_commands: z.array(z.string()).optional(),
+  default_args: z.record(z.union([z.string(), z.array(z.string())])).optional(),
+  disallowed_commands: z.array(z.union([
+    z.string(),
+    z.object({ pattern: z.string(), suggested_tool: z.string().optional() }).strict(),
+  ])).optional(),
   validation_rules: z.array(ValidationRuleSchema).optional(),
   max_arg_length: z.number().int().positive().optional(),
 }).strict();
