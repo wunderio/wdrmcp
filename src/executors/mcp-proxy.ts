@@ -9,14 +9,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { getLogger } from "../logger.js";
-import type { ToolExecutionResult, ToolExecutor } from "../types.js";
-
-/** Remote tool definition as returned by tools/list. */
-export interface RemoteToolDefinition {
-  name: string;
-  description?: string;
-  inputSchema?: Record<string, unknown>;
-}
+import type { ToolExecutionResult, ToolExecutor, RemoteToolDefinition, RemoteToolProvider } from "../types.js";
 
 export interface McpProxyOptions {
   serverUrl: string;
@@ -28,7 +21,7 @@ export interface McpProxyOptions {
   authTokenBasic?: boolean;
 }
 
-export class McpProxyExecutor implements ToolExecutor {
+export class McpProxyExecutor implements ToolExecutor, RemoteToolProvider {
   private readonly serverUrl: string;
   private readonly forwardArgs: boolean;
   private readonly timeout: number;
@@ -419,18 +412,18 @@ export class McpProxyExecutor implements ToolExecutor {
 }
 
 /**
- * A thin wrapper that binds a specific remote tool name to a McpProxyExecutor.
+ * A thin wrapper that binds a specific remote tool name to a RemoteToolProvider.
  * This eliminates the need for the registry to track "originalName" separately.
  * Each remote tool gets its own BoundRemoteToolExecutor instance.
  */
 export class BoundRemoteToolExecutor implements ToolExecutor {
   constructor(
-    private readonly proxy: McpProxyExecutor,
+    private readonly provider: RemoteToolProvider,
     private readonly remoteToolName: string,
   ) {}
 
   async execute(args: Record<string, unknown>): Promise<ToolExecutionResult> {
-    return this.proxy.callTool(args, this.remoteToolName);
+    return this.provider.callTool(args, this.remoteToolName);
   }
 
   validateArguments(_args: Record<string, unknown>): void {

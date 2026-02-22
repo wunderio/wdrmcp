@@ -44,6 +44,15 @@ async function main(): Promise<void> {
     const transport = new StdioServerTransport();
     await server.connect(transport);
 
+    // Clean shutdown: close stdio executors (kills SSH subprocesses).
+    const shutdown = async () => {
+      log.info("Shutting down...");
+      await registry.close();
+      process.exit(0);
+    };
+    process.on("SIGTERM", shutdown);
+    process.on("SIGINT", shutdown);
+
     log.info("WDRMCP server running on stdio");
   } catch (e) {
     log.error(`Fatal error: ${e}`);

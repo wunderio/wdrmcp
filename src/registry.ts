@@ -18,6 +18,7 @@ import { resolveEnvVars } from "./env-resolve.js";
 import { SshExecutor } from "./executors/ssh.js";
 import { CommandToolExecutor } from "./executors/command.js";
 import { McpProxyExecutor, BoundRemoteToolExecutor } from "./executors/mcp-proxy.js";
+import { McpStdioExecutor } from "./executors/mcp-stdio.js";
 import type {
   BridgeConfig,
   ToolConfig,
@@ -28,7 +29,9 @@ import type {
   ArgPreprocessor,
   CommandToolConfig,
   McpServerToolConfig,
-  ContainerExecutor
+  McpStdioToolConfig,
+  ContainerExecutor,
+  RemoteToolProvider,
 } from "./types.js";
 
 const ValidationRuleSchema = z.object({
@@ -89,9 +92,26 @@ const McpServerToolConfigSchema = z.object({
   init_timeout: z.number().int().positive().optional(),
 }).strict();
 
+const McpStdioToolConfigSchema = z.object({
+  name: z.string(),
+  enabled: z.boolean().optional(),
+  description: z.string(),
+  type: z.literal("mcp_stdio"),
+  input_schema: JsonSchemaSchema.optional(),
+  command: z.string(),
+  ssh_target: z.string().optional(),
+  ssh_user: z.string().optional(),
+  working_dir: z.string().optional(),
+  expose_remote_tools: z.boolean().optional(),
+  tool_prefix: z.string().optional(),
+  init_timeout: z.number().int().positive().optional(),
+  timeout: z.number().int().positive().optional(),
+}).strict();
+
 const ToolConfigSchema = z.discriminatedUnion("type", [
   CommandToolConfigSchema,
   McpServerToolConfigSchema,
+  McpStdioToolConfigSchema,
 ]);
 
 const ToolsFileSchemaValidator = z.object({
@@ -104,6 +124,7 @@ export class ToolRegistry {
   private readonly tools: Map<string, RegisteredTool> = new Map();
   private readonly argPreprocessor: ArgPreprocessor;
   private readonly containerExecutor: ContainerExecutor;
+  private readonly stdioExecutors: McpStdioExecutor[] = [];
 
   constructor(toolsConfigDir: string, config: BridgeConfig) {
     this.toolsConfigDir = resolve(toolsConfigDir);
@@ -193,9 +214,12 @@ export class ToolRegistry {
     const executor = this.createExecutor(toolConfig);
     if (!executor) { log.warn(`Failed to create executor: ${name}`); return 0; }
 
-    // MCP server with expose_remote_tools: register each remote tool individually.
+    // MCP server/stdio with expose_remote_tools: register each remote tool individually.
     if (toolConfig.type === "mcp_server" && (toolConfig as McpServerToolConfig).expose_remote_tools) {
       return this.loadRemoteMcpTools(toolConfig as McpServerToolConfig, executor as McpProxyExecutor);
+    }
+    if (toolConfig.type === "mcp_stdio" && (toolConfig as McpStdioToolConfig).expose_remote_tools) {
+      return this.loadRemoteMcpTools(toolConfig as McpStdioToolConfig, executor as McpStdioExecutor);
     }
 
     this.tools.set(name, { config: toolConfig, executor });
@@ -206,44 +230,43 @@ export class ToolRegistry {
   /**
    * Fetch remote tools and register each with a BoundRemoteToolExecutor.
    * No "originalName" tracking needed — the binding is in the executor itself.
+   * Works with any RemoteToolProvider (McpProxyExecutor or McpStdioExecutor).
    */
   private async loadRemoteMcpTools(
-    proxyConfig: McpServerToolConfig,
-    proxy: McpProxyExecutor,
+    providerConfig: McpServerToolConfig | McpStdioToolConfig,
+    provider: RemoteToolProvider,
   ): Promise<number> {
     const log = getLogger();
-    const proxyName = proxyConfig.name;
-    log.info(`Fetching remote tools from: ${proxyName}`);
+    const providerName = providerConfig.name;
+    log.info(`Fetching remote tools from: ${providerName}`);
 
     try {
-      const initTimeout = proxyConfig.init_timeout ?? 30;
+      const initTimeout = providerConfig.init_timeout ?? 30;
       const remoteTools = await Promise.race([
-        proxy.fetchRemoteTools(),
+        provider.fetchRemoteTools(),
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error(`Timeout after ${initTimeout}s`)), initTimeout * 1000),
         ),
       ]);
 
-      if (!remoteTools?.length) { log.warn(`No tools from ${proxyName}`); return 0; }
+      if (!remoteTools?.length) { log.warn(`No tools from ${providerName}`); return 0; }
 
-      // Always prefix remote tools with the proxy tool name
-      const prefix = `${proxyName}_`;
+      const prefix = providerConfig.tool_prefix ?? `${providerName}_`;
       let count = 0;
 
       for (const remote of remoteTools) {
         if (!remote.name) continue;
 
-        const localName = prefix ? `${prefix}${remote.name}` : remote.name;
+        const localName = `${prefix}${remote.name}`;
 
         // Each remote tool gets its own bound executor — no special-casing in executeTool().
-        const boundExecutor = new BoundRemoteToolExecutor(proxy, remote.name);
+        const boundExecutor = new BoundRemoteToolExecutor(provider, remote.name);
 
-        const wrappedConfig: McpServerToolConfig = {
+        const wrappedConfig: ToolConfig = {
+          ...providerConfig,
           name: localName,
           description: remote.description ?? "",
-          type: "mcp_server",
           input_schema: remote.inputSchema as ToolConfig["input_schema"],
-          server_url: proxyConfig.server_url,
         };
 
         this.tools.set(localName, { config: wrappedConfig, executor: boundExecutor });
@@ -251,10 +274,10 @@ export class ToolRegistry {
         count++;
       }
 
-      log.info(`Loaded ${count} tools from ${proxyName}`);
+      log.info(`Loaded ${count} tools from ${providerName}`);
       return count;
     } catch (e) {
-      log.error(`Failed to load remote tools from ${proxyName}: ${e}`);
+      log.error(`Failed to load remote tools from ${providerName}: ${e}`);
       return 0;
     }
   }
@@ -351,6 +374,51 @@ export class ToolRegistry {
         });
       }
 
+      if (type === "mcp_stdio") {
+        const cfg = toolConfig as McpStdioToolConfig;
+        if (!cfg.command) { log.error(`Tool ${name}: missing command`); return null; }
+
+        const envVars = {
+          ...(process.env as Record<string, string | undefined>),
+          DDEV_SSH_USER: process.env.DDEV_SSH_USER ?? this.config.sshUser,
+        };
+        const bridgeVars = { DDEV_PROJECT: this.config.ddevProject };
+
+        const sshTarget = cfg.ssh_target
+          ? resolveEnvVars(cfg.ssh_target, envVars, bridgeVars)
+          : undefined;
+        if (sshTarget) {
+          this.ensureNoUnresolvedEnvPlaceholders(sshTarget, name, "ssh_target");
+        }
+
+        const sshUser = cfg.ssh_user
+          ? resolveEnvVars(cfg.ssh_user, envVars, bridgeVars)
+          : undefined;
+        if (sshUser) {
+          this.ensureNoUnresolvedEnvPlaceholders(sshUser, name, "ssh_user");
+        }
+
+        const workingDir = cfg.working_dir
+          ? resolveEnvVars(cfg.working_dir, envVars, bridgeVars)
+          : undefined;
+        if (workingDir) {
+          this.ensureNoUnresolvedEnvPlaceholders(workingDir, name, "working_dir");
+        }
+
+        const executor = new McpStdioExecutor({
+          command: cfg.command,
+          sshTarget,
+          sshUser,
+          workingDir,
+          initTimeout: cfg.init_timeout,
+          timeout: cfg.timeout,
+          strictHostKeyChecking: this.config.strictHostKeyChecking,
+        });
+
+        this.stdioExecutors.push(executor);
+        return executor;
+      }
+
       log.error(`Unknown tool type: ${type}`);
       return null;
     } catch (e) {
@@ -364,6 +432,18 @@ export class ToolRegistry {
   getToolNames(): string[] { return [...this.tools.keys()]; }
   getTool(name: string): RegisteredTool | undefined { return this.tools.get(name); }
   getAllTools(): Map<string, RegisteredTool> { return this.tools; }
+
+  /** Close all stdio executors (kills SSH subprocesses). */
+  async close(): Promise<void> {
+    const log = getLogger();
+    for (const executor of this.stdioExecutors) {
+      try {
+        await executor.close();
+      } catch (e) {
+        log.debug(`Error closing stdio executor: ${e}`);
+      }
+    }
+  }
 
   /**
    * Execute a tool. Applies arg preprocessing (path normalization)

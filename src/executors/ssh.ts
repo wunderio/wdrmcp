@@ -2,6 +2,28 @@ import { execFile } from "node:child_process";
 import { getLogger } from "../logger.js";
 import type { ContainerExecutor } from "../types.js";
 
+export interface SshArgOptions {
+  host: string;
+  user?: string;
+  strictHostKeyChecking?: boolean;
+}
+
+/**
+ * Build base SSH arguments (host key checking options + destination).
+ * Shared by SshExecutor (command execution) and McpStdioExecutor (stdio transport).
+ */
+export function buildSshArgs(options: SshArgOptions): string[] {
+  const args = ["-o", "LogLevel=ERROR"];
+  if (options.strictHostKeyChecking) {
+    args.push("-o", "StrictHostKeyChecking=yes");
+  } else {
+    args.push("-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null");
+  }
+  const destination = options.user ? `${options.user}@${options.host}` : options.host;
+  args.push(destination);
+  return args;
+}
+
 /**
  * Executes commands on SSH hosts.
  * Assumes SSH keys are configured and available (e.g. via homeadditions).
@@ -57,21 +79,17 @@ export class SshExecutor implements ContainerExecutor {
     // Quote the full command so bash -c receives it as a single string
     const escapedCmd = this.escapeShellCommand(remoteCmd);
     
-    // Build SSH destination: "user@hostname" or just "hostname"
-    const sshDestination = sshUser ? `${sshUser}@${host}` : host;
-
     const shellFlag = "-c";
 
-    const sshArgs = ["-o", "LogLevel=ERROR"];
-    if (this.strictHostKeyChecking) {
-      sshArgs.push("-o", "StrictHostKeyChecking=yes");
-    } else {
-      sshArgs.push("-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null");
-    }
-    sshArgs.push(sshDestination, shell, shellFlag, escapedCmd);
+    const sshArgs = buildSshArgs({
+      host,
+      user: sshUser,
+      strictHostKeyChecking: this.strictHostKeyChecking,
+    });
+    sshArgs.push(shell, shellFlag, escapedCmd);
 
     if (log.isVerbose()) {
-      log.debug(`SSH: Executing ssh ${sshDestination} ${shell} -c '<command>'`);
+      log.debug(`SSH: Executing ssh ${sshUser ? `${sshUser}@${host}` : host} ${shell} -c '<command>'`);
     }
 
     return new Promise((resolve, reject) => {

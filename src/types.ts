@@ -3,7 +3,7 @@
  */
 
 /** Supported tool types in YAML configuration. */
-export type ToolType = "command" | "mcp_server";
+export type ToolType = "command" | "mcp_server" | "mcp_stdio";
 
 /** A single validation rule for tool arguments. */
 export interface ValidationRule {
@@ -71,8 +71,34 @@ export interface McpServerToolConfig extends BaseToolConfig {
   init_timeout?: number;
 }
 
+/** Configuration for an MCP stdio transport tool. */
+export interface McpStdioToolConfig extends BaseToolConfig {
+  type: "mcp_stdio";
+  command: string;
+  ssh_target?: string;
+  ssh_user?: string;
+  working_dir?: string;
+  expose_remote_tools?: boolean;
+  tool_prefix?: string;
+  init_timeout?: number;
+  timeout?: number;
+}
+
+/** Remote tool definition as returned by tools/list. */
+export interface RemoteToolDefinition {
+  name: string;
+  description?: string;
+  inputSchema?: Record<string, unknown>;
+}
+
+/** Interface for executors that can discover and call remote MCP tools. */
+export interface RemoteToolProvider {
+  fetchRemoteTools(): Promise<RemoteToolDefinition[]>;
+  callTool(args: Record<string, unknown>, toolName?: string): Promise<ToolExecutionResult>;
+}
+
 /** Union type for all tool configurations. */
-export type ToolConfig = CommandToolConfig | McpServerToolConfig;
+export type ToolConfig = CommandToolConfig | McpServerToolConfig | McpStdioToolConfig;
 
 /** Top-level structure of a tools YAML file. */
 export interface ToolsFileSchema {
