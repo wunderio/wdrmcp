@@ -24,6 +24,26 @@ export function buildSshArgs(options: SshArgOptions): string[] {
   return args;
 }
 
+function escapeShellArg(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+/**
+ * Build a shell prelude that exports DDEV environment variables (DB_HOST, etc.)
+ * from .ddev/config.yaml. SSH sessions don't inherit container env vars, so
+ * commands that need a Drupal bootstrap (like drush) require this.
+ */
+export function buildDdevEnvPrelude(workingDir?: string): string {
+  if (!workingDir) {
+    return "";
+  }
+
+  const baseDir = workingDir.replace(/\/$/, "");
+  const configPath = escapeShellArg(`${baseDir}/.ddev/config.yaml`);
+
+  return `if [ -f ${configPath} ]; then while IFS= read -r kv; do [ -n "$kv" ] && export "$kv"; done < <(awk -F'- ' '/- (DB_(HOST|NAME|USER|PASS)|HASH_SALT|ENVIRONMENT_NAME)=/ {print $2}' ${configPath}); fi; `;
+}
+
 /**
  * Executes commands on SSH hosts.
  * Assumes SSH keys are configured and available (e.g. via homeadditions).
@@ -64,7 +84,7 @@ export class SshExecutor implements ContainerExecutor {
       remoteCmd = `cd ${this.escapeShellArg(workingDir)} && ${remoteCmd}`;
     }
 
-    const envPrelude = this.buildDdevEnvPrelude(workingDir);
+    const envPrelude = buildDdevEnvPrelude(workingDir);
     if (envPrelude) {
       remoteCmd = `${envPrelude}${remoteCmd}`;
       if (log.isVerbose()) {
@@ -140,18 +160,7 @@ export class SshExecutor implements ContainerExecutor {
   }
 
   private escapeShellArg(value: string): string {
-    return `'${value.replace(/'/g, `'"'"'`)}'`;
-  }
-
-  private buildDdevEnvPrelude(workingDir?: string): string {
-    if (!workingDir) {
-      return "";
-    }
-
-    const baseDir = workingDir.replace(/\/$/, "");
-    const configPath = this.escapeShellArg(`${baseDir}/.ddev/config.yaml`);
-
-    return `if [ -f ${configPath} ]; then while IFS= read -r kv; do [ -n "$kv" ] && export "$kv"; done < <(awk -F'- ' '/- (DB_(HOST|NAME|USER|PASS)|HASH_SALT|ENVIRONMENT_NAME)=/ {print $2}' ${configPath}); fi; `;
+    return escapeShellArg(value);
   }
 }
 

@@ -9,7 +9,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { getLogger } from "../logger.js";
-import { buildSshArgs } from "./ssh.js";
+import { buildSshArgs, buildDdevEnvPrelude } from "./ssh.js";
 import type {
   ToolExecutionResult,
   ToolExecutor,
@@ -194,6 +194,13 @@ export class McpStdioExecutor implements ToolExecutor, RemoteToolProvider {
         let remoteCmd = this.command;
         if (this.workingDir) {
           remoteCmd = `cd ${this.workingDir} && ${remoteCmd}`;
+        }
+
+        // SSH sessions don't inherit container env vars — prepend the DDEV
+        // env prelude so Drush can connect to the database and bootstrap.
+        const envPrelude = buildDdevEnvPrelude(this.workingDir);
+        if (envPrelude) {
+          remoteCmd = `${envPrelude}${remoteCmd}`;
         }
 
         const sshArgs = buildSshArgs({
