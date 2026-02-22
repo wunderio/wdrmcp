@@ -11,7 +11,9 @@ import { z, type ZodRawShape } from "zod";
 import { getLogger } from "./logger.js";
 import { ToolRegistry } from "./registry.js";
 import type { JsonSchemaProperty } from "./types.js";
-import packageJson from "../package.json";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const packageJson = require("../package.json") as { version: string };
 
 /** Convert a JSON Schema property to a Zod schema. */
 function toZod(prop: JsonSchemaProperty): z.ZodTypeAny {
