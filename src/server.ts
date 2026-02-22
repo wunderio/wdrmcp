@@ -11,6 +11,7 @@ import { z, type ZodRawShape } from "zod";
 import { getLogger } from "./logger.js";
 import { ToolRegistry } from "./registry.js";
 import type { JsonSchemaProperty } from "./types.js";
+import packageJson from "../package.json";
 
 /** Convert a JSON Schema property to a Zod schema. */
 function toZod(prop: JsonSchemaProperty): z.ZodTypeAny {
@@ -45,7 +46,7 @@ function toZodShape(
 /** Create and configure the MCP server with all tools from the registry. */
 export function createMcpServer(registry: ToolRegistry): McpServer {
   const log = getLogger();
-  const server = new McpServer({ name: "wdrmcp", version: "0.1.0" });
+  const server = new McpServer({ name: "wdrmcp", version: packageJson.version });
 
   for (const [toolName, { config }] of registry.getAllTools()) {
     server.tool(
