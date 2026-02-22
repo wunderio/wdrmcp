@@ -127,7 +127,7 @@ export class McpProxyExecutor implements ToolExecutor {
           const result = await this.client.callTool({
             name: toolName,
             arguments: args,
-          });
+          }, undefined, { timeout: this.timeout });
           return this.mapSdkResult(result);
         } catch (sdkError) {
           const msg = (sdkError as Error).message ?? "";
@@ -290,26 +290,7 @@ export class McpProxyExecutor implements ToolExecutor {
       return { content: "", isError: result.isError === true ? true : undefined };
     }
 
-    // Extract text from content blocks
-    const texts: string[] = [];
-    for (const block of content) {
-      if (block.type === "text") {
-        texts.push(block.text);
-      } else {
-        texts.push(JSON.stringify(block));
-      }
-    }
-
-    let text = texts.join("\n");
-
-    // Try to parse JSON-escaped strings (matching previous behavior)
-    try {
-      const parsed = JSON.parse(text);
-      text = typeof parsed === "string" ? parsed : JSON.stringify(parsed);
-    } catch {
-      // Not JSON, use as-is
-    }
-
+    const text = this.extractTextFromContentBlocks(content);
     return { content: text, isError: result.isError === true ? true : undefined };
   }
 
@@ -353,16 +334,7 @@ export class McpProxyExecutor implements ToolExecutor {
     // Handle MCP-style content array
     const content = payload.content;
     if (Array.isArray(content) && content.length > 0) {
-      const texts: string[] = [];
-      for (const block of content) {
-        const b = block as Record<string, unknown>;
-        if (b.type === "text" && typeof b.text === "string") {
-          texts.push(b.text);
-        } else {
-          texts.push(JSON.stringify(b));
-        }
-      }
-      const text = texts.join("\n");
+      const text = this.extractTextFromContentBlocks(content);
       const isError = payload.isError === true ? true : undefined;
       return { content: text, isError };
     }
@@ -375,6 +347,74 @@ export class McpProxyExecutor implements ToolExecutor {
 
     // Fallback: return raw data as-is
     return { content: JSON.stringify(result) };
+  }
+
+  /**
+   * Extract clean text from MCP content blocks, unwrapping nested structures.
+   *
+   * Some MCP servers (e.g. n8n) wrap upstream API responses as JSON-encoded
+   * content blocks inside their own content blocks:
+   *   content[0].text = '[{"content":[{"type":"text","text":"# Actual markdown..."}]}]'
+   *
+   * This method detects and unwraps such nesting to return clean text.
+   */
+  private extractTextFromContentBlocks(blocks: unknown[]): string {
+    const texts: string[] = [];
+    for (const block of blocks) {
+      const b = block as Record<string, unknown>;
+      if (b.type === "text" && typeof b.text === "string") {
+        texts.push(b.text);
+      } else {
+        texts.push(JSON.stringify(b));
+      }
+    }
+
+    let text = texts.join("\n");
+
+    // Try to unwrap nested content structures.
+    try {
+      const parsed = JSON.parse(text);
+
+      // Plain string (JSON-escaped): '"some text"' → 'some text'
+      if (typeof parsed === "string") {
+        return parsed;
+      }
+
+      // Nested content blocks array:
+      // [{"content":[{"type":"text","text":"..."}]}]
+      if (Array.isArray(parsed)) {
+        const innerTexts: string[] = [];
+        for (const item of parsed) {
+          if (item?.content && Array.isArray(item.content)) {
+            for (const inner of item.content) {
+              if (inner?.type === "text" && typeof inner?.text === "string") {
+                innerTexts.push(inner.text);
+              }
+            }
+          }
+        }
+        if (innerTexts.length > 0) {
+          return innerTexts.join("\n");
+        }
+      }
+
+      // Nested single content object: {"content":[{"type":"text","text":"..."}]}
+      if (parsed?.content && Array.isArray(parsed.content)) {
+        const innerTexts: string[] = [];
+        for (const inner of parsed.content) {
+          if (inner?.type === "text" && typeof inner?.text === "string") {
+            innerTexts.push(inner.text);
+          }
+        }
+        if (innerTexts.length > 0) {
+          return innerTexts.join("\n");
+        }
+      }
+    } catch {
+      // Not JSON, use as-is
+    }
+
+    return text;
   }
 }
 
