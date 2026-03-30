@@ -8,6 +8,8 @@ export interface SshArgOptions {
   strictHostKeyChecking?: boolean;
 }
 
+const TOOL_ERROR = "__WDRMCP_TOOL_ERROR__";
+
 /**
  * Build base SSH arguments (host key checking options + destination).
  * Shared by SshExecutor (command execution) and McpStdioExecutor (stdio transport).
@@ -45,6 +47,22 @@ export function buildDdevEnvPrelude(workingDir?: string): string {
 }
 
 /**
+ * Build an exit status trailer for the executed command.
+ *
+ * The trailer will capture the exit code and the stderr output of the command
+ * run by `bash -c`, and make sure the executed command always exits zero.
+ * If exit code is non-zero, it will then report the exit code and stderr output
+ * in a structured way that can be parsed by the caller.
+ *
+ * This is necessary, because otherwise bash and SSH will just report
+ * "Command failed" on the entire SSH+bash command without any actual error
+ * message or exit code, making debugging of some tools very difficult.
+ */
+export function buildExitStatusTrailer(): string {
+  return `; TOOL_EXIT_CODE=$?; if [ $TOOL_EXIT_CODE -ne 0 ]; then echo "${TOOL_ERROR}\\n{\\"exit\\":$TOOL_EXIT_CODE,\\"error\\":\\"$(</dev/stderr)}\\"}" >&2; fi; exit 0`;
+}
+
+/**
  * Executes commands on SSH hosts.
  * Assumes SSH keys are configured and available (e.g. via homeadditions).
  */
@@ -78,8 +96,14 @@ export class SshExecutor implements ContainerExecutor {
       log.debug(`SSH: User resolved to: ${sshUser || "default"}`);
     }
 
-    // Build the full command, optionally with working directory change
+    // Build the full command.
     let remoteCmd = command.join(" ");
+    const exitTrailer = buildExitStatusTrailer();
+    if (exitTrailer) {
+      remoteCmd = `${remoteCmd}${exitTrailer}`;
+    }
+
+    // Change to the working directory if specified.
     if (workingDir) {
       remoteCmd = `cd ${this.escapeShellArg(workingDir)} && ${remoteCmd}`;
     }
@@ -92,13 +116,9 @@ export class SshExecutor implements ContainerExecutor {
       }
     }
 
-    if (log.isVerbose()) {
-      log.debug(`SSH: Full remote command: ${remoteCmd.substring(0, 200)}${remoteCmd.length > 200 ? "..." : ""}`);
-    }
-
     // Quote the full command so bash -c receives it as a single string
     const escapedCmd = this.escapeShellCommand(remoteCmd);
-    
+
     const shellFlag = "-c";
 
     const sshArgs = buildSshArgs({
@@ -110,6 +130,7 @@ export class SshExecutor implements ContainerExecutor {
 
     if (log.isVerbose()) {
       log.debug(`SSH: Executing ssh ${sshUser ? `${sshUser}@${host}` : host} ${shell} -c '<command>'`);
+      log.debug(`SSH: Full remote command: ${escapedCmd}`);
     }
 
     return new Promise((resolve, reject) => {
@@ -119,7 +140,9 @@ export class SshExecutor implements ContainerExecutor {
         { maxBuffer: 10 * 1024 * 1024, timeout: 120_000 },
         (error, stdout, stderr) => {
           const duration = Date.now() - startTime;
-          
+
+          // Check if the exit code was non-zero, indicating the SSH command
+          // itself failed (e.g. connection issue).
           if (error) {
             const cleanedError = (stderr?.trim() || error.message).trim();
             log.error(`SSH: Command failed on ${host} (${duration}ms): ${cleanedError}`);
@@ -129,7 +152,30 @@ export class SshExecutor implements ContainerExecutor {
             reject(new Error(cleanedError));
             return;
           }
-          
+
+          // Check if the exit status trailer caught and reported an error.
+          // This means the SSH command was ok, but the remote command failed,
+          // meaning that the tool command exited with a non-zero exit code.
+          else if (stderr.includes(TOOL_ERROR)) {
+            const errorPart = stderr.split(TOOL_ERROR)[1].trim();
+            let errorInfo = { exit: -1, error: "Unknown error" };
+            try {
+              errorInfo = JSON.parse(errorPart);
+            } catch (parseError) {
+              // Report parsing errors as bugs.
+              log.error(`SSH: Failed to parse error info from stderr on ${host} (${duration}ms): ${parseError}`);
+              log.debug(`SSH: Raw stderr: ${stderr}`);
+              reject(new Error(`Command failed with unparseable error info: ${errorPart}`));
+              return;
+            }
+            log.error(`SSH: Command failed on ${host} (${duration}ms) with exit code ${errorInfo.exit}: ${errorInfo.error}`);
+            if (log.isVerbose()) {
+              log.debug(`SSH: Raw stderr: ${stderr}`);
+            }
+            reject(new Error(`Command failed with exit code ${errorInfo.exit}: ${errorInfo.error}`));
+            return;
+          }
+
           log.info(`SSH: Command succeeded on ${host} (${duration}ms)`);
           resolve(stdout);
         },
