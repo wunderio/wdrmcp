@@ -7,6 +7,7 @@
  */
 
 import { getLogger } from "./logger.js";
+import type { EnvVars, BridgeVars } from "./types/args.js";
 
 /**
  * Resolve environment variables and placeholders in a template string.
@@ -23,8 +24,8 @@ import { getLogger } from "./logger.js";
  */
 export function resolveEnvVars(
   template: string,
-  envVars: Record<string, string | undefined> = process.env as Record<string, string>,
-  bridgeVars: Record<string, string> = {},
+  envVars: EnvVars = process.env as Record<string, string>,
+  bridgeVars: BridgeVars = {},
 ): string {
   const log = getLogger();
   let result = template;
@@ -33,7 +34,9 @@ export function resolveEnvVars(
   result = result.replace(/\$\{(\w+)\}/g, (match, varName) => {
     const value = envVars[varName];
     if (!value) {
-      log.warn(`Environment variable not found: ${varName}, keeping placeholder`);
+      log.warn(
+        `Environment variable not found: ${varName}, keeping placeholder`,
+      );
       return match;
     }
     return value;
@@ -72,4 +75,26 @@ export function resolveEnvVarsInObject(
   }
 
   return result;
+}
+
+/**
+ * Ensure there are no unresolved placeholders in a property value.
+ *
+ * @throws Error if any ${VAR} placeholders are found, indicating missing environment variables.
+ */
+export function ensureNoUnresolvedEnvPlaceholders(
+  value: string,
+  toolName: string,
+  fieldName: string,
+): void {
+  const unresolved = [...value.matchAll(/\$\{(\w+)\}/g)].map(
+    (match) => match[1],
+  );
+  if (unresolved.length === 0) {
+    return;
+  }
+
+  throw new Error(
+    `Tool ${toolName}: missing required environment variable(s) for ${fieldName}: ${unresolved.join(", ")}`,
+  );
 }

@@ -8,10 +8,59 @@
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { z } from "zod";
 import { getLogger } from "../logger.js";
-import type { ToolExecutionResult, ToolExecutor, RemoteToolDefinition, RemoteToolProvider } from "../types.js";
+import McpValidator from "../validators/mcp-validator.js";
+import {
+  BaseToolConfigSchema,
+  BaseExecutorOptions,
+  BaseToolConfig,
+} from "../types/base.js";
 
-export interface McpProxyOptions {
+import type { ValidatorInterface } from "../types/validation.js";
+import type {
+  ExecutorConfig,
+  RemoteToolDefinition,
+  RemoteToolProvider,
+  ToolExecutionResult,
+  ToolExecutor,
+} from "../types/types.js";
+
+/**
+ * YAML tool config schema for MCP proxy tools.
+ */
+export const McpProxyToolConfigSchema = z
+  .object({
+    ...BaseToolConfigSchema.shape,
+    type: z.literal("mcp_server"),
+    server_url: z.string(),
+    tool_prefix: z.string().optional(),
+    forward_args: z.boolean().optional(),
+    auth_username: z.string().optional(),
+    auth_password: z.string().optional(),
+    auth_token: z.string().optional(),
+    auth_token_basic: z.boolean().optional(),
+    expose_remote_tools: z.boolean().optional(),
+    init_timeout: z.number().int().positive().optional(),
+  })
+  .strict();
+
+/** Configuration for an MCP server proxy tool. */
+export interface McpProxyToolConfig extends BaseToolConfig {
+  type: "mcp_server";
+  server_url: string;
+  tool_prefix?: string;
+  forward_args?: boolean;
+  timeout?: number;
+  auth_username?: string;
+  auth_password?: string;
+  auth_token?: string;
+  auth_token_basic?: boolean;
+  expose_remote_tools?: boolean;
+  init_timeout?: number;
+}
+
+export interface McpProxyExecutorOptions extends BaseExecutorOptions {
   serverUrl: string;
   forwardArgs?: boolean;
   timeout?: number;
@@ -22,24 +71,27 @@ export interface McpProxyOptions {
 }
 
 export class McpProxyExecutor implements ToolExecutor, RemoteToolProvider {
-  private readonly serverUrl: string;
   private readonly forwardArgs: boolean;
-  private readonly timeout: number;
   private readonly headers: Record<string, string>;
+  private readonly serverUrl: string;
+  private readonly timeout: number;
+  private readonly validator: ValidatorInterface;
+
   private client: Client | null = null;
+  private connectPromise: Promise<void> | null = null;
   /** null = untried, true = SDK connected, false = fallback to raw fetch */
   private sdkAvailable: boolean | null = null;
-  private connectPromise: Promise<void> | null = null;
 
-  constructor(options: McpProxyOptions) {
-    this.serverUrl = options.serverUrl;
+  constructor(options: McpProxyExecutorOptions) {
     this.forwardArgs = options.forwardArgs ?? true;
-    this.timeout = (options.timeout ?? 10) * 1000;
     this.headers = {
       "Content-Type": "application/json",
       Accept: "application/json, text/event-stream",
       "User-Agent": "wdrmcp/0.1",
     };
+    this.serverUrl = options.serverUrl;
+    this.timeout = (options.timeout ?? 10) * 1000;
+    this.validator = new McpValidator(options);
 
     if (options.authToken) {
       if (options.authTokenBasic) {
@@ -54,6 +106,57 @@ export class McpProxyExecutor implements ToolExecutor, RemoteToolProvider {
       ).toString("base64");
       this.headers["Authorization"] = `Basic ${encoded}`;
     }
+  }
+
+  /**
+   * Create a new instance of McpProxyExecutor from the provided configuration.
+   *
+   * @throws Error if required configuration is missing or invalid.
+   */
+  static create(
+    executorConfig: ExecutorConfig<McpProxyToolConfig>,
+  ): McpProxyExecutor {
+    const {
+      toolConfig: cfg,
+      baseConfig,
+      executor,
+      resolvePlaceholders,
+    } = executorConfig;
+    const { name } = baseConfig;
+    const log = getLogger();
+
+    if (!cfg.server_url) {
+      log.error(`Tool ${name}: missing server_url`);
+      throw new Error(`Invalid configuration in ${name}: missing server_url`);
+    }
+
+    const authUsername = resolvePlaceholders("auth_username");
+    const authPassword = resolvePlaceholders("auth_password");
+    const authToken = resolvePlaceholders("auth_token");
+
+    if (
+      (cfg.auth_token && !cfg.auth_token.includes("${")) ||
+      (cfg.auth_password && !cfg.auth_password.includes("${"))
+    ) {
+      log.warn(
+        `Tool ${cfg.name}: auth credentials appear to be literal values; prefer environment variable placeholders`,
+      );
+    }
+
+    return new McpProxyExecutor({
+      ...baseConfig,
+      serverUrl: cfg.server_url,
+      forwardArgs: cfg.forward_args,
+      timeout: cfg.timeout,
+      authUsername,
+      authPassword,
+      authToken,
+      authTokenBasic: cfg.auth_token_basic,
+    });
+  }
+
+  getValidator(): ValidatorInterface {
+    return this.validator;
   }
 
   /**
@@ -79,14 +182,18 @@ export class McpProxyExecutor implements ToolExecutor, RemoteToolProvider {
           description: t.description,
           inputSchema: t.inputSchema as Record<string, unknown>,
         }));
-        log.info(`Fetched ${tools.length} tools via SDK from ${this.serverUrl}`);
+        log.info(
+          `Fetched ${tools.length} tools via SDK from ${this.serverUrl}`,
+        );
         return tools;
       }
 
       // Fallback: raw JSON-RPC
       const result = await this.rawFetchRpc("tools/list", {});
       const tools = this.extractToolsFromRawResponse(result);
-      log.info(`Fetched ${tools.length} tools via raw JSON-RPC from ${this.serverUrl}`);
+      log.info(
+        `Fetched ${tools.length} tools via raw JSON-RPC from ${this.serverUrl}`,
+      );
       return tools;
     } catch (e) {
       log.error(`Failed to fetch tools from ${this.serverUrl}: ${e}`);
@@ -117,16 +224,25 @@ export class McpProxyExecutor implements ToolExecutor, RemoteToolProvider {
       // (some servers declare outputSchema but return content instead of structuredContent).
       if (this.sdkAvailable && this.client && toolName) {
         try {
-          const result = await this.client.callTool({
-            name: toolName,
-            arguments: args,
-          }, undefined, { timeout: this.timeout });
+          const result = await this.client.callTool(
+            {
+              name: toolName,
+              arguments: args,
+            },
+            undefined,
+            { timeout: this.timeout },
+          );
           return this.mapSdkResult(result);
         } catch (sdkError) {
           const msg = (sdkError as Error).message ?? "";
-          if (msg.includes("output schema") || msg.includes("structured content")) {
+          if (
+            msg.includes("output schema") ||
+            msg.includes("structured content")
+          ) {
             if (log.isVerbose()) {
-              log.debug(`SDK outputSchema mismatch for ${toolName}, using raw JSON-RPC fallback`);
+              log.debug(
+                `SDK outputSchema mismatch for ${toolName}, using raw JSON-RPC fallback`,
+              );
             }
           } else {
             throw sdkError;
@@ -153,7 +269,10 @@ export class McpProxyExecutor implements ToolExecutor, RemoteToolProvider {
       return this.parseRawResponse(result);
     } catch (e) {
       if ((e as Error).name === "AbortError") {
-        return { content: `Request timeout after ${this.timeout / 1000}s`, isError: true };
+        return {
+          content: `Request timeout after ${this.timeout / 1000}s`,
+          isError: true,
+        };
       }
       log.error(`MCP proxy error: ${e}`);
       return { content: `Error: ${(e as Error).message}`, isError: true };
@@ -235,7 +354,10 @@ export class McpProxyExecutor implements ToolExecutor, RemoteToolProvider {
    * Simplified fallback for non-MCP servers: plain JSON-RPC 2.0 POST.
    * No session tracking, no SSE parsing, no notifications.
    */
-  private async rawFetchRpc(method: string, params: Record<string, unknown>): Promise<unknown> {
+  private async rawFetchRpc(
+    method: string,
+    params: Record<string, unknown>,
+  ): Promise<unknown> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeout);
 
@@ -258,7 +380,9 @@ export class McpProxyExecutor implements ToolExecutor, RemoteToolProvider {
         const errorText = await response.text();
         const compactError = errorText.replace(/\s+/g, " ").trim();
         const suffix = compactError ? ` - ${compactError}` : "";
-        throw new Error(`HTTP ${response.status}: ${response.statusText}${suffix}`);
+        throw new Error(
+          `HTTP ${response.status}: ${response.statusText}${suffix}`,
+        );
       }
 
       const raw = await response.text();
@@ -277,14 +401,22 @@ export class McpProxyExecutor implements ToolExecutor, RemoteToolProvider {
   }
 
   /** Map SDK CallToolResult to project's ToolExecutionResult. */
-  private mapSdkResult(result: Awaited<ReturnType<Client["callTool"]>>): ToolExecutionResult {
+  private mapSdkResult(
+    result: Awaited<ReturnType<Client["callTool"]>>,
+  ): ToolExecutionResult {
     const content = result.content;
     if (!Array.isArray(content) || content.length === 0) {
-      return { content: "", isError: result.isError === true ? true : undefined };
+      return {
+        content: "",
+        isError: result.isError === true ? true : undefined,
+      };
     }
 
     const text = this.extractTextFromContentBlocks(content);
-    return { content: text, isError: result.isError === true ? true : undefined };
+    return {
+      content: text,
+      isError: result.isError === true ? true : undefined,
+    };
   }
 
   /** Extract tool definitions from a raw JSON-RPC response. */
@@ -305,8 +437,14 @@ export class McpProxyExecutor implements ToolExecutor, RemoteToolProvider {
 
   /** Parse a raw JSON-RPC response into a ToolExecutionResult. */
   private parseRawResponse(result: unknown): ToolExecutionResult {
-    if (typeof result !== "object" || result === null || Array.isArray(result)) {
-      return { content: typeof result === "string" ? result : JSON.stringify(result) };
+    if (
+      typeof result !== "object" ||
+      result === null ||
+      Array.isArray(result)
+    ) {
+      return {
+        content: typeof result === "string" ? result : JSON.stringify(result),
+      };
     }
 
     const r = result as Record<string, unknown>;
@@ -320,9 +458,10 @@ export class McpProxyExecutor implements ToolExecutor, RemoteToolProvider {
 
     // Unwrap JSON-RPC result envelope: {"jsonrpc":"2.0","result":{...},"id":1}
     // The actual MCP response is inside r.result.
-    const payload = ("result" in r && typeof r.result === "object" && r.result !== null)
-      ? r.result as Record<string, unknown>
-      : r;
+    const payload =
+      "result" in r && typeof r.result === "object" && r.result !== null
+        ? (r.result as Record<string, unknown>)
+        : r;
 
     // Handle MCP-style content array
     const content = payload.content;
@@ -415,6 +554,9 @@ export class McpProxyExecutor implements ToolExecutor, RemoteToolProvider {
  * A thin wrapper that binds a specific remote tool name to a RemoteToolProvider.
  * This eliminates the need for the registry to track "originalName" separately.
  * Each remote tool gets its own BoundRemoteToolExecutor instance.
+ *
+ * NOTE: This class is special and doesn't implement static create().
+ * Perhaps tracking "originalName" in the registry would be cleaner overall?
  */
 export class BoundRemoteToolExecutor implements ToolExecutor {
   constructor(
@@ -422,11 +564,11 @@ export class BoundRemoteToolExecutor implements ToolExecutor {
     private readonly remoteToolName: string,
   ) {}
 
-  async execute(args: Record<string, unknown>): Promise<ToolExecutionResult> {
-    return this.provider.callTool(args, this.remoteToolName);
+  getValidator(): ValidatorInterface {
+    return this.provider.getValidator();
   }
 
-  validateArguments(_args: Record<string, unknown>): void {
-    // Remote server handles validation.
+  async execute(args: Record<string, unknown>): Promise<ToolExecutionResult> {
+    return this.provider.callTool(args, this.remoteToolName);
   }
 }

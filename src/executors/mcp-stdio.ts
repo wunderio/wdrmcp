@@ -8,22 +8,64 @@
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { z } from "zod";
 import { getLogger } from "../logger.js";
-import { buildSshArgs, buildDdevEnvPrelude } from "./ssh.js";
+import { buildSshArgs, buildDdevEnvPrelude } from "../ssh-utils.js";
+import McpValidator from "../validators/mcp-validator.js";
+import {
+  BaseToolConfigSchema,
+  BaseExecutorOptions,
+  BaseToolConfig,
+} from "../types/base.js";
+
+import type { ValidatorInterface } from "../types/validation.js";
 import type {
-  ToolExecutionResult,
-  ToolExecutor,
+  ExecutorConfig,
   RemoteToolDefinition,
   RemoteToolProvider,
-} from "../types.js";
+  ToolExecutionResult,
+  ToolExecutor,
+} from "../types/types.js";
 
-export interface McpStdioOptions {
+/**
+ * YAML tool config schema for MCP stdio transport tools.
+ */
+export const McpStdioToolConfigSchema = z
+  .object({
+    ...BaseToolConfigSchema.shape,
+    type: z.literal("mcp_stdio"),
+    command: z.string(),
+    ssh_target: z.string().optional(),
+    ssh_user: z.string().optional(),
+    working_dir: z.string().optional(),
+    expose_remote_tools: z.boolean().optional(),
+    tool_prefix: z.string().optional(),
+    init_timeout: z.number().int().positive().optional(),
+  })
+  .strict();
+
+/** Configuration for an MCP stdio transport tool. */
+export interface McpStdioToolConfig extends BaseToolConfig {
+  type: "mcp_stdio";
+  command: string;
+  ssh_target?: string;
+  ssh_user?: string;
+  working_dir?: string;
+  expose_remote_tools?: boolean;
+  tool_prefix?: string;
+  init_timeout?: number;
+  timeout?: number;
+}
+
+export interface McpStdioExecutorOptions extends BaseExecutorOptions {
   /** Remote command to run (e.g. "vendor/bin/drush mcp:server"). */
   command: string;
   /** SSH host (e.g. "web"). If omitted, command runs locally. */
   sshTarget?: string;
   /** SSH user for remote connection. */
   sshUser?: string;
+  /** Project root directory on the remote. */
+  projectRootDir?: string;
   /** Remote working directory. */
   workingDir?: string;
   /** Seconds for initialize handshake (default 30). */
@@ -36,28 +78,75 @@ export interface McpStdioOptions {
 
 export class McpStdioExecutor implements ToolExecutor, RemoteToolProvider {
   private readonly command: string;
+  private readonly initTimeout: number;
+  private readonly projectRootDir: string;
   private readonly sshTarget?: string;
   private readonly sshUser?: string;
-  private readonly workingDir?: string;
-  private readonly initTimeout: number;
-  private readonly timeout: number;
   private readonly strictHostKeyChecking: boolean;
+  private readonly timeout: number;
+  private readonly validator: ValidatorInterface;
+  private readonly workingDir?: string;
 
   private client: Client | null = null;
-  private transport: StdioClientTransport | null = null;
   private connected = false;
+  private connectPromise: Promise<void> | null = null;
   private disconnected = false;
   private reconnectAttempted = false;
-  private connectPromise: Promise<void> | null = null;
+  private transport: StdioClientTransport | null = null;
 
-  constructor(options: McpStdioOptions) {
+  constructor(options: McpStdioExecutorOptions) {
     this.command = options.command;
+    this.initTimeout = (options.initTimeout ?? 30) * 1000;
+    this.projectRootDir = options.projectRootDir ?? "/var/www/html";
     this.sshTarget = options.sshTarget;
     this.sshUser = options.sshUser;
-    this.workingDir = options.workingDir;
-    this.initTimeout = (options.initTimeout ?? 30) * 1000;
-    this.timeout = (options.timeout ?? 60) * 1000;
     this.strictHostKeyChecking = options.strictHostKeyChecking ?? false;
+    this.timeout = (options.timeout ?? 60) * 1000;
+    this.validator = new McpValidator(options);
+    this.workingDir = options.workingDir;
+  }
+
+  /**
+   * Create a new instance of McpStdioExecutor from the provided configuration.
+   *
+   * @throws Error if required configuration is missing or invalid.
+   */
+  static create(
+    executorConfig: ExecutorConfig<McpStdioToolConfig>,
+  ): McpStdioExecutor {
+    const {
+      toolConfig: cfg,
+      baseConfig,
+      bridgeConfig,
+      resolvePlaceholders,
+    } = executorConfig;
+    const { name } = baseConfig;
+    const log = getLogger();
+
+    if (!cfg.command) {
+      log.error(`Tool ${name}: missing command`);
+      throw new Error(`Invalid MCP stdio tool config: missing command`);
+    }
+
+    const sshTarget = resolvePlaceholders("ssh_target");
+    const sshUser = resolvePlaceholders("ssh_user");
+    const workingDir = resolvePlaceholders("working_dir");
+
+    const executor = new McpStdioExecutor({
+      ...baseConfig,
+      command: cfg.command,
+      sshTarget,
+      sshUser,
+      workingDir,
+      initTimeout: cfg.init_timeout,
+      timeout: cfg.timeout,
+      strictHostKeyChecking: bridgeConfig.strictHostKeyChecking,
+    });
+    return executor;
+  }
+
+  getValidator(): ValidatorInterface {
+    return this.validator;
   }
 
   async fetchRemoteTools(): Promise<RemoteToolDefinition[]> {
@@ -104,7 +193,10 @@ export class McpStdioExecutor implements ToolExecutor, RemoteToolProvider {
       await this.ensureConnected();
 
       if (!this.client) {
-        return { content: "Error: MCP stdio client not connected", isError: true };
+        return {
+          content: "Error: MCP stdio client not connected",
+          isError: true,
+        };
       }
 
       const name = toolName ?? "unknown";
@@ -117,15 +209,14 @@ export class McpStdioExecutor implements ToolExecutor, RemoteToolProvider {
       return this.mapSdkResult(result);
     } catch (e) {
       if ((e as Error).name === "AbortError") {
-        return { content: `Request timeout after ${this.timeout / 1000}s`, isError: true };
+        return {
+          content: `Request timeout after ${this.timeout / 1000}s`,
+          isError: true,
+        };
       }
       log.error(`MCP stdio call error: ${e}`);
       return { content: `Error: ${(e as Error).message}`, isError: true };
     }
-  }
-
-  validateArguments(_args: Record<string, unknown>): void {
-    // Remote server handles validation.
   }
 
   /** Close the MCP client and kill the SSH subprocess. */
@@ -198,7 +289,7 @@ export class McpStdioExecutor implements ToolExecutor, RemoteToolProvider {
 
         // SSH sessions don't inherit container env vars — prepend the DDEV
         // env prelude so Drush can connect to the database and bootstrap.
-        const envPrelude = buildDdevEnvPrelude(this.workingDir);
+        const envPrelude = buildDdevEnvPrelude(this.projectRootDir);
         if (envPrelude) {
           remoteCmd = `${envPrelude}${remoteCmd}`;
         }
@@ -220,7 +311,9 @@ export class McpStdioExecutor implements ToolExecutor, RemoteToolProvider {
       }
 
       if (log.isVerbose()) {
-        log.debug(`MCP stdio: spawning ${transportCommand} ${transportArgs.join(" ")}`);
+        log.debug(
+          `MCP stdio: spawning ${transportCommand} ${transportArgs.join(" ")}`,
+        );
       }
 
       const transport = new StdioClientTransport({
@@ -248,7 +341,15 @@ export class McpStdioExecutor implements ToolExecutor, RemoteToolProvider {
       await Promise.race([
         client.connect(transport),
         new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`Initialize timeout after ${this.initTimeout / 1000}s`)), this.initTimeout),
+          setTimeout(
+            () =>
+              reject(
+                new Error(
+                  `Initialize timeout after ${this.initTimeout / 1000}s`,
+                ),
+              ),
+            this.initTimeout,
+          ),
         ),
       ]);
 
@@ -277,10 +378,15 @@ export class McpStdioExecutor implements ToolExecutor, RemoteToolProvider {
   }
 
   /** Map SDK CallToolResult to project's ToolExecutionResult. */
-  private mapSdkResult(result: Awaited<ReturnType<Client["callTool"]>>): ToolExecutionResult {
+  private mapSdkResult(
+    result: Awaited<ReturnType<Client["callTool"]>>,
+  ): ToolExecutionResult {
     const content = result.content;
     if (!Array.isArray(content) || content.length === 0) {
-      return { content: "", isError: result.isError === true ? true : undefined };
+      return {
+        content: "",
+        isError: result.isError === true ? true : undefined,
+      };
     }
 
     const texts: string[] = [];
@@ -293,6 +399,9 @@ export class McpStdioExecutor implements ToolExecutor, RemoteToolProvider {
       }
     }
 
-    return { content: texts.join("\n"), isError: result.isError === true ? true : undefined };
+    return {
+      content: texts.join("\n"),
+      isError: result.isError === true ? true : undefined,
+    };
   }
 }
