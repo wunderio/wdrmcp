@@ -373,7 +373,7 @@ export const CheckToolExecutor: ToolExecutorStatic = class CheckToolExecutor
    * We could use "|| true" in commands, but that would swallow all errors,
    * which also makes debugging difficult.
    *
-   * Note: Redirection from/to /dev/null is necessary to properly close
+   * Note: Redirection from /dev/null is necessary to properly close
    * file handles over the SSH connection. Without it, the handles never close,
    * and the tool call will eventually time out.
    *

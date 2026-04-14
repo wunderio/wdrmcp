@@ -269,6 +269,56 @@ export const CommandToolExecutor: ToolExecutorStatic = class CommandToolExecutor
         return;
       }
 
+      // Check if the exit status trailer caught and reported an error.
+      // This means the SSH command was ok, but the remote command failed,
+      // meaning that the tool command exited with a non-zero exit code.
+      //
+      // Note that the sentinel will be in stdout, not stderr, because
+      // the script execution always exits 0 unless something is seriously
+      // wrong.
+      else if (stdout.includes(TOOL_ERROR_SENTINEL)) {
+        const errorPart = stdout.split(TOOL_ERROR_SENTINEL)[1].trim();
+        let errorInfo = { exit: -1, error: "Unknown error" };
+        try {
+          const parsed = errorPart.split("\n");
+          // Remove the exit code, it is expected to be on the first line.
+          const exitCode = parsed.shift();
+          if (exitCode) {
+            errorInfo.exit = parseInt(exitCode);
+          }
+          // The rest of the lines will the stderr from the command.
+          if (parsed.length > 0) {
+            errorInfo.error = parsed.join("\n");
+          }
+        } catch (parseError) {
+          // Report parsing errors as bugs.
+          log.error(
+            `${this.type}: Failed to parse error info from stderr on ${this.host}: ${parseError}`,
+          );
+          log.debug(`${this.type}: Raw stderr: ${stderr}`);
+          reject(
+            new Error(
+              `Remote command failed with unparseable error info: ${errorPart}`,
+            ),
+          );
+          return;
+        }
+
+        // Report unexpected remote command failure.
+        log.error(
+          `${this.type}: Remote command failed on ${this.host} with exit code ${errorInfo.exit}: ${errorInfo.error}`,
+        );
+        if (log.isVerbose()) {
+          log.debug(`${this.type}: Raw stderr: ${stderr}`);
+        }
+        reject(
+          new Error(
+            `Remote command failed with exit code ${errorInfo.exit}: ${errorInfo.error}`,
+          ),
+        );
+        return;
+      }
+
       const trimmedOutput = stdout.trim();
 
       log.info(`${this.type}: Command succeeded on ${this.host}`);
@@ -309,7 +359,7 @@ export const CommandToolExecutor: ToolExecutorStatic = class CommandToolExecutor
    * We could use "|| true" in commands, but that would swallow all errors,
    * which also makes debugging difficult.
    *
-   * Note: Redirection from/to /dev/null is necessary to properly close
+   * Note: Redirection from /dev/null is necessary to properly close
    * file handles over the SSH connection. Without it, the handles never close,
    * and the tool call will eventually time out.
    *
