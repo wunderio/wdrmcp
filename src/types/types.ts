@@ -27,7 +27,7 @@ export type ExecutorConfig<T> = {
    * Resolves env and bridge vars in the value of the given property.
    * Ensures that no placeholders are left in the value.
    */
-  resolvePlaceholders(propertyName: string): string;
+  resolvePlaceholders(propertyName: string): string | undefined;
 };
 
 /** Remote tool definition as returned by tools/list. */
