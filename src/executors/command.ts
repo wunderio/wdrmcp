@@ -102,7 +102,7 @@ export const CommandToolExecutor: ToolExecutorStatic = class CommandToolExecutor
     this.shell = options.shell ?? "bash";
     this.sshUser = options.sshUser;
     this.strictHostKeyChecking = options.strictHostKeyChecking ?? false;
-    this.timeoutMs = options.timeoutMs ?? 60_000;
+    this.timeoutMs = options.timeoutMs ?? 60_000; // Default to 60 seconds
     this.type = options.type;
     this.useEnvVarsInRemote = options.useEnvVarsInRemote ?? true;
     this.validator = new Validator(options);
@@ -163,7 +163,7 @@ export const CommandToolExecutor: ToolExecutorStatic = class CommandToolExecutor
       sshUser,
       strictHostKeyChecking,
       type: cfg.type,
-      timeoutMs: cfg.timeout,
+      timeoutMs: cfg.timeout ? cfg.timeout * 1000 : undefined,
       useEnvVarsInRemote: cfg.use_env_vars_in_remote,
       validationRules: cfg.validation_rules,
       workingDir,

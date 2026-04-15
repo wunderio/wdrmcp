@@ -115,7 +115,7 @@ export const CheckToolExecutor: ToolExecutorStatic = class CheckToolExecutor
     this.sshUser = options.sshUser;
     this.strictHostKeyChecking = options?.strictHostKeyChecking ?? false;
     this.successExitCodes = options.successExitCodes ?? [1];
-    this.timeoutMs = options.timeoutMs ?? 120_000;
+    this.timeoutMs = options.timeoutMs ?? 120_000; // Default to 120 seconds
     this.type = options.type;
     this.useEnvVarsInRemote = options.useEnvVarsInRemote ?? true;
     this.validator = new Validator(options);
@@ -175,7 +175,7 @@ export const CheckToolExecutor: ToolExecutorStatic = class CheckToolExecutor
       shell: cfg.shell,
       sshUser,
       successExitCodes: cfg.success_exit_codes,
-      timeoutMs: cfg.timeout,
+      timeoutMs: cfg.timeout ? cfg.timeout * 1000 : undefined,
       useEnvVarsInRemote: cfg.use_env_vars_in_remote,
       validationRules: cfg.validation_rules,
       workingDir,
