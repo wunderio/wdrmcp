@@ -108,7 +108,7 @@ export function createMcpServer(registry: ToolRegistry): McpServer {
 
           return {
             content: [{ type: "text" as const, text: result.content }],
-            isError: result.isError,
+            isError: result.isError || result.isTimeout,
           };
         } catch (error) {
           const duration = Date.now() - startTime;
