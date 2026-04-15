@@ -35,12 +35,13 @@ export const McpStdioToolConfigSchema = z
     ...BaseToolConfigSchema.shape,
     type: z.literal("mcp_stdio"),
     command: z.string(),
+    expose_remote_tools: z.boolean().optional(),
+    init_timeout: z.number().int().positive().optional(),
+    project_root_dir: z.string().optional(),
     ssh_target: z.string().optional(),
     ssh_user: z.string().optional(),
-    working_dir: z.string().optional(),
-    expose_remote_tools: z.boolean().optional(),
     tool_prefix: z.string().optional(),
-    init_timeout: z.number().int().positive().optional(),
+    working_dir: z.string().optional(),
   })
   .strict();
 
@@ -48,13 +49,14 @@ export const McpStdioToolConfigSchema = z
 export interface McpStdioToolConfig extends BaseToolConfig {
   type: "mcp_stdio";
   command: string;
+  expose_remote_tools?: boolean;
+  init_timeout?: number;
+  project_root_dir?: string;
   ssh_target?: string;
   ssh_user?: string;
-  working_dir?: string;
-  expose_remote_tools?: boolean;
-  tool_prefix?: string;
-  init_timeout?: number;
   timeout?: number;
+  tool_prefix?: string;
+  working_dir?: string;
 }
 
 export interface McpStdioExecutorOptions extends BaseExecutorOptions {
@@ -131,16 +133,18 @@ export class McpStdioExecutor implements ToolExecutor, RemoteToolProvider {
     const sshTarget = resolvePlaceholders("ssh_target");
     const sshUser = resolvePlaceholders("ssh_user");
     const workingDir = resolvePlaceholders("working_dir");
+    const projectRootDir = resolvePlaceholders("project_root_dir");
 
     const executor = new McpStdioExecutor({
       ...baseConfig,
       command: cfg.command,
+      initTimeout: cfg.init_timeout,
+      projectRootDir,
       sshTarget,
       sshUser,
-      workingDir,
-      initTimeout: cfg.init_timeout,
-      timeout: cfg.timeout,
       strictHostKeyChecking: bridgeConfig.strictHostKeyChecking,
+      timeout: cfg.timeout,
+      workingDir,
     });
     return executor;
   }
