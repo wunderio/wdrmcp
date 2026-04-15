@@ -39,7 +39,7 @@ export function buildDdevEnvPrelude(projectRootDir: string): string {
  * Shared by SshExecutor (command execution) and McpStdioExecutor (stdio transport).
  */
 export function buildSshArgs(options: SshArgOptions): string[] {
-  const args = ["-t", "-o", "LogLevel=ERROR"];
+  const args = ["-T", "-o", "LogLevel=ERROR"];
   if (options.strictHostKeyChecking) {
     args.push("-o", "StrictHostKeyChecking=yes");
   } else {
