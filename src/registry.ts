@@ -274,8 +274,6 @@ export class ToolRegistry {
     envVars: EnvVars,
     bridgeVars: BridgeVars,
   ) {
-    const log = getLogger();
-
     /**
      * Resolves env and bridge vars in the value of the given property.
      * Ensures that no placeholders are left in the value.
