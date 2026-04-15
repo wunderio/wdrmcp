@@ -56,7 +56,8 @@ export class Logger {
     const fileFormatted = `${timestamp} - wdrmcp - ${levelLabel} - ${message}${argsText}`;
     const stderrFormatted = `[wdrmcp] ${level}: ${message}${argsText}`;
 
-    // Write WARN/ERROR to stderr for VSCode logs; keep INFO/DEBUG in file only.
+    // Write WARN/ERROR to stderr for VSCode logs;
+    // keep INFO/DEBUG in file only unless verboseLogging is enabled.
     if (this.verboseLogging || level === "warn" || level === "error") {
       console.error(stderrFormatted);
     }
