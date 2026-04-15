@@ -285,7 +285,9 @@ export const CommandToolExecutor: ToolExecutorStatic = class CommandToolExecutor
       // the script execution always exits 0 unless something is seriously
       // wrong.
       else if (DETECT_TOOL_ERROR_SENTINEL_REGEX.test(stdout)) {
-        const errorPart = stdout.split(TOOL_ERROR_SENTINEL)[1].trim();
+        const parts = stdout.split(TOOL_ERROR_SENTINEL);
+        const stdoutPart = parts[0].trim();
+        const errorPart = parts[1].trim();
         let errorInfo = { exit: -1, error: "Unknown error" };
         try {
           const parsed = errorPart.split("\n");
@@ -294,22 +296,35 @@ export const CommandToolExecutor: ToolExecutorStatic = class CommandToolExecutor
           if (exitCode) {
             errorInfo.exit = parseInt(exitCode);
           }
-          // The rest of the lines will the stderr from the command.
+          // The rest of the lines will be the stderr from the command.
           if (parsed.length > 0) {
             errorInfo.error = parsed.join("\n");
+          }
+          // If the error part is empty, the tool must have output its error(s)
+          // into stdout, so use the stdout part as the error message.
+          else {
+            errorInfo.error = stdoutPart;
           }
         } catch (parseError) {
           // Report parsing errors as bugs.
           log.error(
             `${this.type}: Failed to parse error info from stderr on ${this.host}: ${parseError}`,
           );
-          log.debug(`${this.type}: Raw stderr: ${stderr}`);
           reject(
             new Error(
               `Remote command failed with unparseable error info: ${errorPart}`,
             ),
           );
           return;
+        }
+
+        if (log.isVerbose()) {
+          log.debug(
+            `${this.type}: Success exit codes: ${this.successExitCodes.join(", ")}`,
+          );
+          log.debug(
+            `${this.type}: Parsed error info from remote command: exit=${errorInfo.exit}, error=${errorInfo.error}`,
+          );
         }
 
         // Report unexpected remote command failure.
