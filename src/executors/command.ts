@@ -146,7 +146,7 @@ export const CommandToolExecutor: ToolExecutorStatic = class CommandToolExecutor
     }
 
     // Note: These will throw if they end up containing unresolved placeholders.
-    const sshTarget = resolvePlaceholders("ssh_target");
+    const sshTarget = resolvePlaceholders("ssh_target") ?? "web";
     const sshUser = resolvePlaceholders("ssh_user") ?? defaultUser;
     const projectRootDir = resolvePlaceholders("project_root_dir");
     const workingDir = resolvePlaceholders("working_dir");
