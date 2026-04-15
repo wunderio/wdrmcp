@@ -266,7 +266,7 @@ export class ToolRegistry {
 
   /**
    * Create a resolver function which handles resolving env and bridge vars,
-   * and ensures there are no unresolved placeholders.
+   * and ensures there are no unresolved env placeholders.
    */
   private createPlaceholderResolver(
     toolName: string,
@@ -276,10 +276,11 @@ export class ToolRegistry {
   ) {
     /**
      * Resolves env and bridge vars in the value of the given property.
-     * Ensures that no placeholders are left in the value.
+     * Ensures that no env placeholders are left in the value.
+     * Missing bridge var placeholders will be left unresolved.
      *
      * @throws Error if the property is not a string,
-     *   or if there are unresolved placeholders after resolution.
+     *   or if there are unresolved env placeholders after resolution.
      */
     return function resolvePlaceholders(
       propertyName: keyof ToolConfig,

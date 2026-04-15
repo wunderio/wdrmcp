@@ -78,7 +78,7 @@ export function resolveEnvVarsInObject(
 }
 
 /**
- * Ensure there are no unresolved placeholders in a property value.
+ * Ensure there are no unresolved env placeholders in a property value.
  *
  * @throws Error if any ${VAR} placeholders are found, indicating missing environment variables.
  */
