@@ -42,12 +42,13 @@ export const CheckToolConfigSchema = z
     ...BaseToolValidationConfigSchema.shape,
     type: z.literal("check"),
     command_template: z.string(),
+    project_root_dir: z.string().optional(),
+    shell: z.string().optional(),
     ssh_target: z.string(),
     ssh_user: z.string().optional(),
-    working_dir: z.string().optional(),
-    shell: z.string().optional(),
-    use_env_vars_in_remote: z.boolean().optional(),
     success_exit_codes: z.array(z.number().int()).optional(),
+    use_env_vars_in_remote: z.boolean().optional(),
+    working_dir: z.string().optional(),
   })
   .strict();
 
