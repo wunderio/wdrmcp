@@ -334,6 +334,7 @@ export const CheckToolExecutor: ToolExecutorStatic = class CheckToolExecutor
         if (this.successExitCodes.includes(errorInfo.exit)) {
           resolve({
             content: `Checks failed!\n\n${errorInfo.error.replaceAll("\\n", "\n")}`,
+            isError: true,
           });
         } else {
           // Report unexpected remote command failure.
