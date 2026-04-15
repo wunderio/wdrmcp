@@ -3,7 +3,7 @@ import type { Args } from "./args.js";
 /** A single validation rule for tool arguments. */
 export interface ValidationRule {
   pattern: string;
-  message: string;
+  message?: string;
   field?: string;
 }
 
