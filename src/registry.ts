@@ -478,7 +478,7 @@ export class ToolRegistry {
         log.error(`Tool ${name} execution timeout: ${duration}ms: ${message}`);
         if (log.isVerbose()) {
           log.debug(
-            `Tool ${name} timed out with args: ${JSON.stringify(args)}`,
+            `Tool ${name} timed out with args: ${JSON.stringify(processedArgs)}`,
           );
         }
         return {
