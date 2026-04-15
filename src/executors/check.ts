@@ -5,7 +5,10 @@
 
 import { execFile, ExecFileException } from "node:child_process";
 import { z } from "zod";
-import { TOOL_ERROR_SENTINEL } from "../constants.js";
+import {
+  TOOL_ERROR_SENTINEL,
+  DETECT_TOOL_ERROR_SENTINEL_REGEX,
+} from "../constants.js";
 import { getLogger } from "../logger.js";
 import {
   addSingleQuotes,
@@ -298,7 +301,7 @@ export const CheckToolExecutor: ToolExecutorStatic = class CheckToolExecutor
       // Note that the sentinel will be in stdout, not stderr, because
       // the script execution always exits 0 unless something is seriously
       // wrong.
-      else if (stdout.includes(TOOL_ERROR_SENTINEL)) {
+      else if (DETECT_TOOL_ERROR_SENTINEL_REGEX.test(stdout)) {
         const errorPart = stdout.split(TOOL_ERROR_SENTINEL)[1].trim();
         let errorInfo = { exit: -1, error: "Unknown error" };
         try {
