@@ -390,28 +390,29 @@ export const CheckToolExecutor: ToolExecutorStatic = class CheckToolExecutor
    */
   private buildRemoteScript(command: string): string {
     const { useEnvVarsInRemote, projectRootDir, shell, workingDir } = this;
-    const errorLogFile = "/tmp/tool_stderr.log";
     return `
 
 #!/usr/bin/env ${shell}
 
 # Note: cannot use -e flag or a failing command will abort the entire script.
 set -uo pipefail
+error_log=$(mktemp)
 
 ${useEnvVarsInRemote ? buildDdevEnvPrelude(projectRootDir) : ""}
 
 (
   ${workingDir ? `cd ${addSingleQuotes(workingDir)} &&` : ""}
   ${command}
-) 2>${errorLogFile} </dev/null
+) 2>"$error_log" </dev/null
 
 # Trailer to capture exit code and stderr from the command.
 TOOL_EXIT_CODE=$?
 if [ $TOOL_EXIT_CODE -ne 0 ]; then
   echo '${TOOL_ERROR_SENTINEL}';
   echo "$TOOL_EXIT_CODE";
-  cat ${errorLogFile};
+  cat "$error_log";
 fi
+rm -f "$error_log";
 exit 0
 
   `.trim();
