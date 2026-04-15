@@ -95,6 +95,8 @@ export interface BridgeConfig {
   containerProjectRoot: string;
   /** SSH user for container connections (defaults to current user). */
   sshUser?: string;
+  /** SSH target for container connections (defaults to the ddev web server). */
+  sshTarget: string;
   /** Enforce SSH host key validation. */
   strictHostKeyChecking: boolean;
   /** Enable verbose logging (full outputs, extensive debugging). */

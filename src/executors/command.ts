@@ -131,7 +131,11 @@ export const CommandToolExecutor: ToolExecutorStatic = class CommandToolExecutor
       resolvePlaceholders,
     } = executorConfig;
     const { name } = baseConfig;
-    const { sshUser: bridgeDefaultUser, strictHostKeyChecking } = bridgeConfig;
+    const {
+      sshUser: bridgeDefaultUser,
+      sshTarget: bridgeDefaultTarget,
+      strictHostKeyChecking,
+    } = bridgeConfig;
     const defaultUser = bridgeDefaultUser ?? process.env.USER;
 
     if (!cfg.command_template) {
@@ -146,7 +150,7 @@ export const CommandToolExecutor: ToolExecutorStatic = class CommandToolExecutor
     }
 
     // Note: These will throw if they end up containing unresolved placeholders.
-    const sshTarget = resolvePlaceholders("ssh_target") ?? "web";
+    const sshTarget = resolvePlaceholders("ssh_target") ?? bridgeDefaultTarget;
     const sshUser = resolvePlaceholders("ssh_user") ?? defaultUser;
     const projectRootDir = resolvePlaceholders("project_root_dir");
     const workingDir = resolvePlaceholders("working_dir");
