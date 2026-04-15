@@ -147,7 +147,21 @@ export default class Validator implements ValidatorInterface {
       if (rule.field) {
         if (fieldName !== rule.field) continue;
       }
-      if (rule.pattern && new RegExp(rule.pattern).test(value)) {
+      if (!rule.pattern) continue;
+
+      let regex: RegExp;
+      try {
+        regex = new RegExp(rule.pattern);
+      } catch (error) {
+        const fieldContext = rule.field ? ` for field '${rule.field}'` : "";
+        const reason =
+          error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `Invalid validation rule pattern${fieldContext}: '${rule.pattern}'. ${reason}`,
+        );
+      }
+
+      if (regex.test(value)) {
         throw new Error(
           rule.message ?? `Validation failed for pattern: ${rule.pattern}`,
         );
