@@ -452,9 +452,9 @@ export class ToolRegistry {
     }
 
     // Apply preprocessor (path normalization).
-    const processedArgs = this.argPreprocessor(args);
+    const processedArgs = this.argPreprocessor(mergedArgs);
     // @FIXME make this actually check if path normalization was applied
-    if (JSON.stringify(args) !== JSON.stringify(processedArgs)) {
+    if (JSON.stringify(mergedArgs) !== JSON.stringify(processedArgs)) {
       if (log.isVerbose()) {
         log.debug(
           `Path normalization applied: ${JSON.stringify(processedArgs)}`,
