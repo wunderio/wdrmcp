@@ -31,7 +31,7 @@ export function buildDdevEnvPrelude(projectRootDir: string): string {
   const baseDir = projectRootDir.replace(/\/$/, "");
   const configPath = addSingleQuotes(`${baseDir}/.ddev/config.yaml`);
 
-  return `if [ -f ${configPath} ]; then while IFS= read -r kv; do [ -n "$kv" ] && export "$kv"; done < <(awk -F'- ' '/- (${ALLOWED_ENVVARS.join("|")})=/ {print $2}' ${configPath}); fi; `;
+  return `if [ -f ${configPath} ]; then ddev_env_file=$(mktemp) && awk -F'- ' '/- (${ALLOWED_ENVVARS.join("|")})=/ {print $2}' ${configPath} > "$ddev_env_file" && while IFS= read -r kv; do [ -n "$kv" ] && export "$kv"; done < "$ddev_env_file"; rm -f "$ddev_env_file"; fi; `;
 }
 
 /**
