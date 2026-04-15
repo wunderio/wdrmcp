@@ -111,7 +111,7 @@ export const CheckToolExecutor: ToolExecutorStatic = class CheckToolExecutor
     this.defaultArgs = options.defaultArgs ?? {};
     this.host = options.host;
     this.projectRootDir = options.projectRootDir ?? "/var/www/html";
-    this.shell = options.shell ?? "/bin/bash";
+    this.shell = options.shell ?? "bash";
     this.sshUser = options.sshUser;
     this.strictHostKeyChecking = options?.strictHostKeyChecking ?? false;
     this.successExitCodes = options.successExitCodes ?? [1];
@@ -128,7 +128,7 @@ export const CheckToolExecutor: ToolExecutorStatic = class CheckToolExecutor
   }
 
   /**
-   * Create a new instance of CommandToolExecutor from the provided configuration.
+   * Create a new instance of CheckToolExecutor from the provided configuration.
    * Validates the presence of required fields and resolves placeholders.
    *
    * @throws Error if required configuration is missing or invalid.
@@ -174,6 +174,7 @@ export const CheckToolExecutor: ToolExecutorStatic = class CheckToolExecutor
       projectRootDir,
       shell: cfg.shell,
       sshUser,
+      strictHostKeyChecking,
       successExitCodes: cfg.success_exit_codes,
       timeoutMs: cfg.timeout ? cfg.timeout * 1000 : undefined,
       useEnvVarsInRemote: cfg.use_env_vars_in_remote,
@@ -326,7 +327,6 @@ export const CheckToolExecutor: ToolExecutorStatic = class CheckToolExecutor
         if (this.successExitCodes.includes(errorInfo.exit)) {
           resolve({
             content: `Checks failed!\n\n${errorInfo.error.replaceAll("\\n", "\n")}`,
-            // isError: true, // not sure
           });
         } else {
           // Report unexpected remote command failure.

@@ -130,7 +130,7 @@ export class ToolRegistry {
               (issue) => `${issue.path.join(".") || "root"}: ${issue.message}`,
             )
             .join("; ");
-          log.error(`:( Invalid config schema in ${file}: ${details}`);
+          log.error(`Invalid config schema in ${file}: ${details}`);
           continue;
         }
 

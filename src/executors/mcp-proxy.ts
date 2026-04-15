@@ -279,10 +279,6 @@ export class McpProxyExecutor implements ToolExecutor, RemoteToolProvider {
     }
   }
 
-  validateArguments(_args: Record<string, unknown>): void {
-    // Remote servers handle their own validation.
-  }
-
   /**
    * Lazily connect to the remote server via MCP SDK.
    * On failure, sets sdkAvailable=false so callers fall back to raw fetch.
