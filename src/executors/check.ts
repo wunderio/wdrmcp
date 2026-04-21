@@ -1,6 +1,6 @@
 /**
- * CommandToolExecutor — executes shell commands via SSH
- * with argument substitution ({placeholder} syntax).
+ * CheckToolExecutor — like CommandToolExecutor, but for running checks/tests.
+ * Interprets exit codes to properly tell agents whether the checks succeeded.
  */
 
 import { execFile, ExecFileException } from "node:child_process";
@@ -31,57 +31,68 @@ import type {
 } from "../types/validation.js";
 import type {
   ExecutorConfig,
-  ToolExecutionResult,
   ToolExecutor,
   ToolExecutorStatic,
+  ToolExecutionResult,
 } from "../types/types.js";
 
 /**
- * YAML tool config schema for command tools.
+ * YAML tool config schema for check tools.
  */
-export const CommandToolConfigSchema = z
+export const CheckToolConfigSchema = z
   .object({
     ...BaseToolConfigSchema.shape,
     ...BaseToolValidationConfigSchema.shape,
-    type: z.literal("command"),
+    type: z.literal("check"),
     command_template: z.string(),
     project_root_dir: z.string().optional(),
     shell: z.string().optional(),
     ssh_target: z.string(),
     ssh_user: z.string().optional(),
+    success_exit_codes: z.array(z.number().int()).optional(),
     use_env_vars_in_remote: z.boolean().optional(),
     working_dir: z.string().optional(),
   })
   .strict();
 
 /**
- * Tool configuration schema for a command-type tool (SSH execution).
- * Assumes SSH keys are configured and available (e.g. via homeadditions).
+ * Configuration for a check type tool (SSH execution).
+ *
+ * NOTE: This is very similar to the 'command' tool, but we are intentionally
+ * keeping it separate for now to allow for diverging features in the future.
+ * Also, it's easier to understand the relationship between the tool config and
+ * the executor config when all properties are listed here.
  */
-export interface CommandToolConfig extends BaseToolConfig {
-  type: "command";
+export interface CheckToolConfig extends BaseToolConfig {
+  type: "check";
   command_template: string;
   project_root_dir?: string;
   shell?: string;
   ssh_target: string; // e.g. "web" or "{DDEV_PROJECT}.ddev.site"
   ssh_user?: string; // e.g. "${DDEV_SSH_USER}", defaults to current user
+  success_exit_codes?: number[]; // Exit codes to interpret as successful.
   use_env_vars_in_remote?: boolean;
   working_dir?: string; // Optional working directory for execution
 }
 
-export interface CommandExecutorOptions extends BaseExecutorOptions {
+export interface CheckExecutorOptions extends BaseExecutorOptions {
   commandTemplate: string;
-  host: string; // SSH target hostname
+  host: string;
   projectRootDir?: string;
   shell?: string;
   sshUser?: string;
   strictHostKeyChecking?: boolean;
+  successExitCodes?: number[];
   type: string;
   useEnvVarsInRemote?: boolean;
   workingDir?: string;
 }
 
-export const CommandToolExecutor: ToolExecutorStatic = class CommandToolExecutor
+/**
+ * Executes check commands on SSH hosts.
+ * Assumes SSH keys are configured and available (e.g. via homeadditions).
+ */
+export const CheckToolExecutor: ToolExecutorStatic = class CheckToolExecutor
   implements ToolExecutor
 {
   private readonly commandTemplate: string;
@@ -91,21 +102,23 @@ export const CommandToolExecutor: ToolExecutorStatic = class CommandToolExecutor
   private readonly shell: string;
   private readonly sshUser?: string;
   private readonly strictHostKeyChecking: boolean;
+  private readonly successExitCodes: number[];
   private readonly timeoutMs: number;
   private readonly type: string;
   private readonly useEnvVarsInRemote: boolean;
   private readonly validator: ValidatorInterface;
   private readonly workingDir?: string;
 
-  constructor(options: CommandExecutorOptions) {
+  constructor(options: CheckExecutorOptions) {
     this.commandTemplate = options.commandTemplate;
     this.defaultArgs = options.defaultArgs ?? {};
     this.host = options.host;
     this.projectRootDir = options.projectRootDir ?? "/var/www/html";
     this.shell = options.shell ?? "bash";
     this.sshUser = options.sshUser;
-    this.strictHostKeyChecking = options.strictHostKeyChecking ?? false;
-    this.timeoutMs = options.timeoutMs ?? 60_000; // Default to 60 seconds
+    this.strictHostKeyChecking = options?.strictHostKeyChecking ?? false;
+    this.successExitCodes = options.successExitCodes ?? [1];
+    this.timeoutMs = options.timeoutMs ?? 120_000; // Default to 120 seconds
     this.type = options.type;
     this.useEnvVarsInRemote = options.useEnvVarsInRemote ?? true;
     this.validator = new Validator(options);
@@ -118,14 +131,14 @@ export const CommandToolExecutor: ToolExecutorStatic = class CommandToolExecutor
   }
 
   /**
-   * Create a new instance of CommandToolExecutor from the provided configuration.
+   * Create a new instance of CheckToolExecutor from the provided configuration.
    * Validates the presence of required fields and resolves placeholders.
    *
    * @throws Error if required configuration is missing or invalid.
    */
   static create(
-    executorConfig: ExecutorConfig<CommandToolConfig>,
-  ): CommandToolExecutor {
+    executorConfig: ExecutorConfig<CheckToolConfig>,
+  ): CheckToolExecutor {
     const log = getLogger();
     const {
       toolConfig: cfg,
@@ -158,7 +171,7 @@ export const CommandToolExecutor: ToolExecutorStatic = class CommandToolExecutor
     const projectRootDir = resolvePlaceholders("project_root_dir");
     const workingDir = resolvePlaceholders("working_dir");
 
-    return new CommandToolExecutor({
+    return new CheckToolExecutor({
       ...baseConfig,
       commandTemplate: cfg.command_template,
       defaultArgs: cfg.default_args,
@@ -169,7 +182,7 @@ export const CommandToolExecutor: ToolExecutorStatic = class CommandToolExecutor
       shell: cfg.shell,
       sshUser,
       strictHostKeyChecking,
-      type: cfg.type,
+      successExitCodes: cfg.success_exit_codes,
       timeoutMs: cfg.timeout ? cfg.timeout * 1000 : undefined,
       useEnvVarsInRemote: cfg.use_env_vars_in_remote,
       validationRules: cfg.validation_rules,
@@ -178,7 +191,7 @@ export const CommandToolExecutor: ToolExecutorStatic = class CommandToolExecutor
   }
 
   /**
-   * Execute the command on the remote host via SSH.
+   * Execute the check command on the remote host via SSH.
    */
   async execute(args: Args): Promise<ToolExecutionResult> {
     const log = getLogger();
@@ -265,15 +278,20 @@ export const CommandToolExecutor: ToolExecutorStatic = class CommandToolExecutor
       stdout: string,
       stderr: string,
     ): void => {
+      if (log.isVerbose()) {
+        log.debug(`${this.type}: Raw stdout:\n${stdout}`);
+        log.debug(`${this.type}: Raw stderr:\n${stderr}`);
+      }
+      // Check if the exit code was non-zero, indicating the SSH command
+      // itself failed (e.g. connection issue).
       if (error) {
-        const cleanedError = (stderr?.trim() || error.message).trim();
-        log.error(
-          `${this.type}: Command failed on ${this.host}: ${cleanedError}`,
+        const errorMsg = (stderr?.trim() || error.message).trim();
+        log.error(`${this.type}: Command failed on ${this.host}: ${errorMsg}`);
+        reject(
+          new Error(
+            `${this.type}: Command failed on ${this.host}: ${errorMsg}`,
+          ),
         );
-        if (log.isVerbose()) {
-          log.debug(`${this.type}: Raw stderr: ${stderr}`);
-        }
-        reject(new Error(cleanedError));
         return;
       }
 
@@ -320,39 +338,37 @@ export const CommandToolExecutor: ToolExecutorStatic = class CommandToolExecutor
 
         if (log.isVerbose()) {
           log.debug(
+            `${this.type}: Success exit codes: ${this.successExitCodes.join(", ")}`,
+          );
+          log.debug(
             `${this.type}: Parsed error info from remote command: exit=${errorInfo.exit}, error=${errorInfo.error}`,
           );
         }
 
-        // Report unexpected remote command failure.
-        log.error(
-          `${this.type}: Remote command failed on ${this.host} with exit code ${errorInfo.exit}: ${errorInfo.error}`,
-        );
-        if (log.isVerbose()) {
-          log.debug(`${this.type}: Raw stderr: ${stderr}`);
+        // Check if the error code needs to be interpreted as a success,
+        // e.g. test command was executed OK, but tests failed.
+        if (this.successExitCodes.includes(errorInfo.exit)) {
+          resolve({
+            content: `Checks failed!\n\n${errorInfo.error.replaceAll("\\n", "\n")}`,
+            isError: true,
+          });
+        } else {
+          // Report unexpected remote command failure.
+          log.error(
+            `${this.type}: Remote command failed on ${this.host} with exit code ${errorInfo.exit}: ${errorInfo.error}`,
+          );
+          reject(
+            new Error(
+              `Remote command failed with exit code ${errorInfo.exit}: ${errorInfo.error}`,
+            ),
+          );
         }
-        reject(
-          new Error(
-            `Remote command failed with exit code ${errorInfo.exit}: ${errorInfo.error}`,
-          ),
-        );
-        return;
-      }
-
-      const trimmedOutput = stdout.trim();
-
-      log.info(`${this.type}: Command succeeded on ${this.host}`);
-
-      // Add success message for empty outputs.
-      if (trimmedOutput.length === 0) {
-        resolve({ content: "Command completed successfully (no output)" });
         return;
       }
 
       resolve({
-        content: trimmedOutput,
+        content: `Checks passed: No errors or warnings to report.\n\n${stdout}`,
       });
-      return;
     };
   }
 

@@ -85,7 +85,7 @@ tools:
     ssh_target: "web"
     ssh_user: "${DDEV_SSH_USER}"
     working_dir: "/var/www/html"
-    shell: "/bin/bash"
+    shell: "bash" # Uses /usr/bin/env to resolve the shell
     default_args:
       arg2: "default-value"
     disallowed_commands:
@@ -123,8 +123,9 @@ tools:
 ```
 
   Notes:
-  - `wdrmcp` supports both plain JSON-RPC HTTP MCP endpoints and Streamable HTTP MCP endpoints.
-  - For Streamable HTTP servers, `wdrmcp` performs `initialize` and `notifications/initialized`, keeps `mcp-session-id`, and sends `Accept: application/json, text/event-stream`.
+
+- `wdrmcp` supports both plain JSON-RPC HTTP MCP endpoints and Streamable HTTP MCP endpoints.
+- For Streamable HTTP servers, `wdrmcp` performs `initialize` and `notifications/initialized`, keeps `mcp-session-id`, and sends `Accept: application/json, text/event-stream`.
 
 ## Architecture
 

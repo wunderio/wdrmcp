@@ -10,7 +10,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z, type ZodRawShape } from "zod";
 import { getLogger } from "./logger.js";
 import { ToolRegistry } from "./registry.js";
-import type { JsonSchemaProperty } from "./types.js";
+import type { JsonSchemaProperty } from "./types/json-schema.js";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const packageJson = require("../package.json") as { version: string };
@@ -19,21 +19,31 @@ const packageJson = require("../package.json") as { version: string };
 function toZod(prop: JsonSchemaProperty): z.ZodTypeAny {
   const base = (() => {
     switch (prop.type) {
-      case "string": return prop.enum ? z.enum(prop.enum as [string, ...string[]]) : z.string();
-      case "number": case "integer": return z.number();
-      case "boolean": return z.boolean();
-      case "array": return z.array(prop.items ? toZod(prop.items) : z.unknown());
-      case "object": return z.record(z.unknown());
-      default: return z.unknown();
+      case "string":
+        return prop.enum
+          ? z.enum(prop.enum as [string, ...string[]])
+          : z.string();
+      case "number":
+      case "integer":
+        return z.number();
+      case "boolean":
+        return z.boolean();
+      case "array":
+        return z.array(prop.items ? toZod(prop.items) : z.unknown());
+      case "object":
+        return z.record(z.unknown());
+      default:
+        return z.unknown();
     }
   })();
   return prop.description ? base.describe(prop.description) : base;
 }
 
 /** Convert JSON Schema properties + required to a ZodRawShape. */
-function toZodShape(
-  schema?: { properties?: Record<string, JsonSchemaProperty>; required?: string[] },
-): ZodRawShape {
+function toZodShape(schema?: {
+  properties?: Record<string, JsonSchemaProperty>;
+  required?: string[];
+}): ZodRawShape {
   if (!schema?.properties) return {};
 
   const required = new Set(schema.required ?? []);
@@ -48,7 +58,10 @@ function toZodShape(
 /** Create and configure the MCP server with all tools from the registry. */
 export function createMcpServer(registry: ToolRegistry): McpServer {
   const log = getLogger();
-  const server = new McpServer({ name: "wdrmcp", version: packageJson.version });
+  const server = new McpServer({
+    name: "wdrmcp",
+    version: packageJson.version,
+  });
 
   for (const [toolName, { config }] of registry.getAllTools()) {
     server.tool(
@@ -62,12 +75,23 @@ export function createMcpServer(registry: ToolRegistry): McpServer {
           log.info(`Tool input arguments: ${JSON.stringify(args)}`);
           log.debug(`Tool config: ${JSON.stringify(config)}`);
         }
-        
+
         try {
-          const result = await registry.executeTool(toolName, args as Record<string, unknown>);
+          const result = await registry.executeTool(
+            toolName,
+            args as Record<string, unknown>,
+          );
           const duration = Date.now() - startTime;
-          
-          if (result.isError) {
+
+          if (result.isTimeout) {
+            log.error(`TOOL RESULT (${duration}ms, TIMEOUT): ${toolName}`);
+            if (log.isVerbose()) {
+              log.info(
+                `TOOL OUTPUT (timeout, ${result.content.length} chars):`,
+              );
+              log.info(result.content);
+            }
+          } else if (result.isError) {
             log.error(`TOOL RESULT (${duration}ms, ERROR): ${toolName}`);
             if (log.isVerbose()) {
               log.info(`TOOL OUTPUT (error, ${result.content.length} chars):`);
@@ -81,21 +105,31 @@ export function createMcpServer(registry: ToolRegistry): McpServer {
             }
           }
           log.info(`========== TOOL END: ${toolName} ==========`);
-          
+
           return {
             content: [{ type: "text" as const, text: result.content }],
-            isError: result.isError,
+            isError: result.isError || result.isTimeout,
           };
         } catch (error) {
           const duration = Date.now() - startTime;
-          const errorMsg = error instanceof Error ? error.message : String(error);
-          log.error(`TOOL EXCEPTION (${duration}ms): ${toolName} - ${errorMsg}`);
+          const errorMsg =
+            error instanceof Error ? error.message : String(error);
+          log.error(
+            `TOOL EXCEPTION (${duration}ms): ${toolName} - ${errorMsg}`,
+          );
           if (log.isVerbose()) {
-            log.error(`Exception stack: ${error instanceof Error ? error.stack : ""}`);
+            log.error(
+              `Exception stack: ${error instanceof Error ? error.stack : ""}`,
+            );
           }
           log.info(`========== TOOL END: ${toolName} (EXCEPTION) ==========`);
           return {
-            content: [{ type: "text" as const, text: `Tool execution failed: ${errorMsg}` }],
+            content: [
+              {
+                type: "text" as const,
+                text: `Tool execution failed: ${errorMsg}`,
+              },
+            ],
             isError: true,
           };
         }
@@ -103,6 +137,8 @@ export function createMcpServer(registry: ToolRegistry): McpServer {
     );
   }
 
-  log.info(`MCP server configured with ${registry.getToolNames().length} tools`);
+  log.info(
+    `MCP server configured with ${registry.getToolNames().length} tools`,
+  );
   return server;
 }

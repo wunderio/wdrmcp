@@ -5,7 +5,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import dotenv from "dotenv";
-import type { BridgeConfig } from "./types.js";
+import type { BridgeConfig } from "./types/types.js";
 
 const DEFAULT_SSH_USER_FILE = "/workspace/.ddev/.agents/.runtime.env";
 
@@ -58,6 +58,7 @@ Environment variables:
   DDEV_PROJECT            DDEV project name (default: "default-project")
   HOST_PROJECT_ROOT       Host filesystem project root (default: /workspace)
   CONTAINER_PROJECT_ROOT  Container filesystem project root (default: /var/www/html)
+  DDEV_SSH_TARGET         SSH target for container connections (fallback, default: "web")
   DDEV_SSH_USER           SSH user for container connections (preferred)
   DDEV_SSH_USER_FILE      Path to a file containing SSH user (fallback)
   SSH_USER                SSH user for container connections (fallback, default: $USER)
@@ -73,7 +74,8 @@ export function parseArgs(argv: string[]): BridgeConfig {
   let logFile: string | undefined = "/tmp/wdrmcp.log";
   let verboseLogging = false;
   let strictHostKeyChecking =
-    (process.env.SSH_STRICT_HOST_KEY_CHECKING ?? "false").toLowerCase() === "true";
+    (process.env.SSH_STRICT_HOST_KEY_CHECKING ?? "false").toLowerCase() ===
+    "true";
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
@@ -112,18 +114,22 @@ export function parseArgs(argv: string[]): BridgeConfig {
   // without requiring shell-level exports.
   loadProjectEnvFromToolsConfigPath(toolsConfigPath);
 
+  // SSH target resolution strategy:
+  // 1. Primary: SSH_TARGET env var (explicit override)
+  // 2. Fallback: "web" (common default for DDEV containers)
+  let sshTarget = process.env.DDEV_SSH_TARGET ?? "web";
+
   // SSH user resolution strategy:
   // 1. Primary: DDEV_SSH_USER env var (explicit override)
   // 2. Secondary: Read from .env file (auto-detected in container)
   // 3. Fallback: SSH_USER or USER env vars (host-based defaults)
   let sshUser = process.env.DDEV_SSH_USER;
-  
+
   if (!sshUser) {
-    const sshUserFile =
-      process.env.DDEV_SSH_USER_FILE ?? DEFAULT_SSH_USER_FILE;
+    const sshUserFile = process.env.DDEV_SSH_USER_FILE ?? DEFAULT_SSH_USER_FILE;
     sshUser = readSshUserFromFile(sshUserFile);
   }
-  
+
   if (!sshUser) {
     sshUser = process.env.SSH_USER ?? process.env.USER;
   }
@@ -135,8 +141,8 @@ export function parseArgs(argv: string[]): BridgeConfig {
     logFile,
     verboseLogging,
     hostProjectRoot: process.env.HOST_PROJECT_ROOT ?? "/workspace",
-    containerProjectRoot:
-      process.env.CONTAINER_PROJECT_ROOT ?? "/var/www/html",
+    containerProjectRoot: process.env.CONTAINER_PROJECT_ROOT ?? "/var/www/html",
+    sshTarget,
     sshUser,
     strictHostKeyChecking,
   };

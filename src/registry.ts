@@ -14,134 +14,76 @@ import { globSync } from "glob";
 import yaml from "js-yaml";
 import { z } from "zod";
 import { getLogger } from "./logger.js";
-import { resolveEnvVars } from "./env-resolve.js";
-import { SshExecutor } from "./executors/ssh.js";
-import { CommandToolExecutor } from "./executors/command.js";
-import { McpProxyExecutor, BoundRemoteToolExecutor } from "./executors/mcp-proxy.js";
-import { McpStdioExecutor } from "./executors/mcp-stdio.js";
-import type {
-  BridgeConfig,
-  ToolConfig,
-  ToolsFileSchema,
-  ToolExecutor,
-  ToolExecutionResult,
-  RegisteredTool,
-  ArgPreprocessor,
+import {
+  resolveEnvVars,
+  ensureNoUnresolvedEnvPlaceholders,
+} from "./env-resolve.js";
+
+import {
+  CommandToolConfigSchema,
   CommandToolConfig,
-  McpServerToolConfig,
+  CommandToolExecutor,
+} from "./executors/command.js";
+import {
+  CheckToolConfigSchema,
+  CheckToolConfig,
+  CheckToolExecutor,
+} from "./executors/check.js";
+import {
+  BoundRemoteToolExecutor,
+  McpProxyExecutor,
+  McpProxyToolConfig,
+  McpProxyToolConfigSchema,
+} from "./executors/mcp-proxy.js";
+import {
+  McpStdioExecutor,
   McpStdioToolConfig,
-  ContainerExecutor,
+  McpStdioToolConfigSchema,
+} from "./executors/mcp-stdio.js";
+
+import type { Args, EnvVars, BridgeVars } from "./types/args.js";
+import type {
+  ArgPreprocessor,
+  BridgeConfig,
+  ExecutorConfig,
+  RegisteredTool,
   RemoteToolProvider,
-} from "./types.js";
-
-const ValidationRuleSchema = z.object({
-  pattern: z.string(),
-  message: z.string().optional(),
-  field: z.string().optional(),
-}).strict();
-
-const JsonSchemaPropertySchema: z.ZodType = z.lazy(() => z.object({
-  type: z.string(),
-  description: z.string().optional(),
-  enum: z.array(z.string()).optional(),
-  default: z.unknown().optional(),
-  items: z.lazy(() => JsonSchemaPropertySchema).optional(),
-}).strict());
-
-const JsonSchemaSchema: z.ZodType = z.lazy(() => z.object({
-  type: z.string(),
-  properties: z.record(JsonSchemaPropertySchema).optional(),
-  required: z.array(z.string()).optional(),
-}).strict());
-
-const CommandToolConfigSchema = z.object({
-  name: z.string(),
-  enabled: z.boolean().optional(),
-  description: z.string(),
-  type: z.literal("command"),
-  input_schema: JsonSchemaSchema.optional(),
-  command_template: z.string(),
-  ssh_target: z.string(),
-  ssh_user: z.string().optional(),
-  working_dir: z.string().optional(),
-  shell: z.string().optional(),
-  default_args: z.record(z.union([z.string(), z.array(z.string())])).optional(),
-  disallowed_commands: z.array(z.union([
-    z.string(),
-    z.object({ pattern: z.string(), suggested_tool: z.string().optional() }).strict(),
-  ])).optional(),
-  validation_rules: z.array(ValidationRuleSchema).optional(),
-  max_arg_length: z.number().int().positive().optional(),
-}).strict();
-
-const McpServerToolConfigSchema = z.object({
-  name: z.string(),
-  enabled: z.boolean().optional(),
-  description: z.string(),
-  type: z.literal("mcp_server"),
-  input_schema: JsonSchemaSchema.optional(),
-  server_url: z.string(),
-  tool_prefix: z.string().optional(),
-  forward_args: z.boolean().optional(),
-  timeout: z.number().int().positive().optional(),
-  auth_username: z.string().optional(),
-  auth_password: z.string().optional(),
-  auth_token: z.string().optional(),
-  auth_token_basic: z.boolean().optional(),
-  expose_remote_tools: z.boolean().optional(),
-  init_timeout: z.number().int().positive().optional(),
-}).strict();
-
-const McpStdioToolConfigSchema = z.object({
-  name: z.string(),
-  enabled: z.boolean().optional(),
-  description: z.string(),
-  type: z.literal("mcp_stdio"),
-  input_schema: JsonSchemaSchema.optional(),
-  command: z.string(),
-  ssh_target: z.string().optional(),
-  ssh_user: z.string().optional(),
-  working_dir: z.string().optional(),
-  expose_remote_tools: z.boolean().optional(),
-  tool_prefix: z.string().optional(),
-  init_timeout: z.number().int().positive().optional(),
-  timeout: z.number().int().positive().optional(),
-}).strict();
+  ToolConfig,
+  ToolExecutionResult,
+  ToolExecutor,
+  ToolsFileSchema,
+} from "./types/types.js";
 
 const ToolConfigSchema = z.discriminatedUnion("type", [
   CommandToolConfigSchema,
-  McpServerToolConfigSchema,
+  CheckToolConfigSchema,
+  McpProxyToolConfigSchema,
   McpStdioToolConfigSchema,
 ]);
 
-const ToolsFileSchemaValidator = z.object({
-  tools: z.array(ToolConfigSchema),
-}).strict();
+const ToolsFileSchemaValidator = z
+  .object({
+    tools: z.array(ToolConfigSchema),
+  })
+  .strict();
 
 export class ToolRegistry {
   private readonly toolsConfigDir: string;
   private readonly config: BridgeConfig;
   private readonly tools: Map<string, RegisteredTool> = new Map();
   private readonly argPreprocessor: ArgPreprocessor;
-  private readonly containerExecutor: ContainerExecutor;
   private readonly stdioExecutors: McpStdioExecutor[] = [];
 
   constructor(toolsConfigDir: string, config: BridgeConfig) {
     this.toolsConfigDir = resolve(toolsConfigDir);
     this.config = config;
 
-    // Initialize standard container executor (now SSH based)
-    // Pass the configured SSH user or fall back to environment
-    this.containerExecutor = new SshExecutor({
-      defaultUser: config.sshUser,
-      strictHostKeyChecking: config.strictHostKeyChecking,
-    });
-
     // Path normalization as a composable preprocessor.
     // Converts devcontainer paths (e.g. /workspace/...) to container paths (/var/www/html/...).
     const hostRoot = config.hostProjectRoot;
     const containerRoot = config.containerProjectRoot;
-    this.argPreprocessor = (args) => this.normalizePaths(args, hostRoot, containerRoot);
+    this.argPreprocessor = (args) =>
+      this.normalizePaths(args, hostRoot, containerRoot);
   }
 
   /**
@@ -157,11 +99,11 @@ export class ToolRegistry {
 
     log.info(`Loading tools from: ${this.toolsConfigDir}`);
     const configFiles = globSync("*.yml", { cwd: this.toolsConfigDir }).sort();
-    
+
     if (configFiles.length === 0) {
       log.warn(`No .yml files found in ${this.toolsConfigDir}`);
     }
-    
+
     if (log.isVerbose()) {
       log.debug(`Found config files: ${configFiles.join(", ")}`);
     }
@@ -176,12 +118,17 @@ export class ToolRegistry {
         const content = readFileSync(filePath, "utf-8");
         const parsed = yaml.load(content);
 
-        if (!parsed) { log.warn(`Empty config file: ${file}`); continue; }
+        if (!parsed) {
+          log.warn(`Empty config file: ${file}`);
+          continue;
+        }
 
         const validation = ToolsFileSchemaValidator.safeParse(parsed);
         if (!validation.success) {
           const details = validation.error.issues
-            .map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`)
+            .map(
+              (issue) => `${issue.path.join(".") || "root"}: ${issue.message}`,
+            )
             .join("; ");
           log.error(`Invalid config schema in ${file}: ${details}`);
           continue;
@@ -196,7 +143,9 @@ export class ToolRegistry {
           loadedCount += await this.loadSingleTool(toolConfig);
         }
       } catch (e) {
-        log.error(`Error loading ${file}: ${e instanceof yaml.YAMLException ? e.message : e}`);
+        log.error(
+          `Error loading ${file}: ${e instanceof yaml.YAMLException ? e.message : e}`,
+        );
       }
     }
 
@@ -208,18 +157,39 @@ export class ToolRegistry {
     const log = getLogger();
     const name = toolConfig.name;
 
-    if (!name) { log.warn("Tool config missing 'name'"); return 0; }
-    if (toolConfig.enabled === false) { log.info(`Tool disabled: ${name}`); return 0; }
+    if (!name) {
+      log.warn("Tool config missing 'name'");
+      return 0;
+    }
+    if (toolConfig.enabled === false) {
+      log.info(`Tool disabled: ${name}`);
+      return 0;
+    }
 
     const executor = this.createExecutor(toolConfig);
-    if (!executor) { log.warn(`Failed to create executor: ${name}`); return 0; }
+    if (!executor) {
+      log.warn(`Failed to create executor: ${name}`);
+      return 0;
+    }
 
     // MCP server/stdio with expose_remote_tools: register each remote tool individually.
-    if (toolConfig.type === "mcp_server" && (toolConfig as McpServerToolConfig).expose_remote_tools) {
-      return this.loadRemoteMcpTools(toolConfig as McpServerToolConfig, executor as McpProxyExecutor);
+    if (
+      toolConfig.type === "mcp_server" &&
+      (toolConfig as McpProxyToolConfig).expose_remote_tools
+    ) {
+      return this.loadRemoteMcpTools(
+        toolConfig as McpProxyToolConfig,
+        executor as McpProxyExecutor,
+      );
     }
-    if (toolConfig.type === "mcp_stdio" && (toolConfig as McpStdioToolConfig).expose_remote_tools) {
-      return this.loadRemoteMcpTools(toolConfig as McpStdioToolConfig, executor as McpStdioExecutor);
+    if (
+      toolConfig.type === "mcp_stdio" &&
+      (toolConfig as McpStdioToolConfig).expose_remote_tools
+    ) {
+      return this.loadRemoteMcpTools(
+        toolConfig as McpStdioToolConfig,
+        executor as McpStdioExecutor,
+      );
     }
 
     this.tools.set(name, { config: toolConfig, executor });
@@ -233,7 +203,7 @@ export class ToolRegistry {
    * Works with any RemoteToolProvider (McpProxyExecutor or McpStdioExecutor).
    */
   private async loadRemoteMcpTools(
-    providerConfig: McpServerToolConfig | McpStdioToolConfig,
+    providerConfig: McpProxyToolConfig | McpStdioToolConfig,
     provider: RemoteToolProvider,
   ): Promise<number> {
     const log = getLogger();
@@ -245,11 +215,17 @@ export class ToolRegistry {
       const remoteTools = await Promise.race([
         provider.fetchRemoteTools(),
         new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`Timeout after ${initTimeout}s`)), initTimeout * 1000),
+          setTimeout(
+            () => reject(new Error(`Timeout after ${initTimeout}s`)),
+            initTimeout * 1000,
+          ),
         ),
       ]);
 
-      if (!remoteTools?.length) { log.warn(`No tools from ${providerName}`); return 0; }
+      if (!remoteTools?.length) {
+        log.warn(`No tools from ${providerName}`);
+        return 0;
+      }
 
       const prefix = providerConfig.tool_prefix ?? `${providerName}_`;
       let count = 0;
@@ -260,7 +236,10 @@ export class ToolRegistry {
         const localName = `${prefix}${remote.name}`;
 
         // Each remote tool gets its own bound executor — no special-casing in executeTool().
-        const boundExecutor = new BoundRemoteToolExecutor(provider, remote.name);
+        const boundExecutor = new BoundRemoteToolExecutor(
+          provider,
+          remote.name,
+        );
 
         const wrappedConfig: ToolConfig = {
           ...providerConfig,
@@ -269,7 +248,10 @@ export class ToolRegistry {
           input_schema: remote.inputSchema as ToolConfig["input_schema"],
         };
 
-        this.tools.set(localName, { config: wrappedConfig, executor: boundExecutor });
+        this.tools.set(localName, {
+          config: wrappedConfig,
+          executor: boundExecutor,
+        });
         log.info(`Loaded remote tool: ${localName} (from ${remote.name})`);
         count++;
       }
@@ -282,139 +264,118 @@ export class ToolRegistry {
     }
   }
 
+  /**
+   * Create a resolver function which handles resolving env and bridge vars,
+   * and ensures there are no unresolved env placeholders.
+   */
+  private createPlaceholderResolver(
+    toolName: string,
+    cfg: ToolConfig,
+    envVars: EnvVars,
+    bridgeVars: BridgeVars,
+  ) {
+    /**
+     * Resolves env and bridge vars in the value of the given property.
+     * Ensures that no env placeholders are left in the value.
+     * Missing bridge var placeholders will be left unresolved.
+     *
+     * @throws Error if the property is not a string,
+     *   or if there are unresolved env placeholders after resolution.
+     */
+    return function resolvePlaceholders(
+      propertyName: keyof ToolConfig,
+    ): string | undefined {
+      const target = cfg[propertyName];
+      // Loose check for null/undefined.
+      if (target == null) {
+        return undefined;
+      }
+      // Resolve vars in strings.
+      if (typeof target === "string") {
+        const resolved = resolveEnvVars(target, envVars, bridgeVars);
+        ensureNoUnresolvedEnvPlaceholders(resolved, toolName, propertyName);
+        return resolved;
+      }
+      throw new Error(
+        `Tool ${toolName}: resolvePlaceholders() can only be used on strings; property '${String(propertyName)}' is of type '${typeof target}'`,
+      );
+    };
+  }
+
+  private getBaseConfig(toolConfig: ToolConfig) {
+    const {
+      name,
+      enabled,
+      description,
+      type,
+      input_schema: inputSchema,
+      disallowed_commands: disallowedCommands,
+      max_arg_length: maxArgLength,
+      validation_rules: validationRules,
+    } = toolConfig;
+
+    return {
+      name,
+      enabled,
+      description,
+      type,
+      inputSchema,
+      disallowedCommands,
+      maxArgLength,
+      validationRules,
+    };
+  }
+
   private createExecutor(toolConfig: ToolConfig): ToolExecutor | null {
     const log = getLogger();
     const type = toolConfig.type ?? "command";
     const name = toolConfig.name;
 
+    // Resolve environment variables and bridge placeholders
+    const envVars = {
+      ...(process.env as Record<string, string | undefined>),
+      DDEV_SSH_USER: process.env.DDEV_SSH_USER ?? this.config.sshUser,
+    };
+    const bridgeVars = { DDEV_PROJECT: this.config.ddevProject };
+    const baseConfig = this.getBaseConfig(toolConfig);
+
+    const resolvePlaceholders = this.createPlaceholderResolver(
+      name,
+      toolConfig,
+      envVars,
+      bridgeVars,
+    );
+
+    const executorConfig = {
+      toolConfig,
+      baseConfig,
+      bridgeConfig: this.config,
+      resolvePlaceholders,
+    };
+
     try {
       if (type === "command") {
-        const cfg = toolConfig as CommandToolConfig;
-        if (!cfg.command_template) { log.error(`Tool ${name}: missing command_template`); return null; }
-        if (!cfg.ssh_target) { log.error(`Tool ${name}: missing ssh_target`); return null; }
+        return CommandToolExecutor.create(
+          executorConfig as ExecutorConfig<CommandToolConfig>,
+        );
+      }
 
-        // Resolve environment variables and bridge placeholders
-        const envVars = {
-          ...(process.env as Record<string, string | undefined>),
-          DDEV_SSH_USER: process.env.DDEV_SSH_USER ?? this.config.sshUser,
-        };
-        const bridgeVars = { DDEV_PROJECT: this.config.ddevProject };
-
-        const sshTarget = resolveEnvVars(cfg.ssh_target, envVars, bridgeVars);
-        this.ensureNoUnresolvedEnvPlaceholders(sshTarget, name, "ssh_target");
-
-        const sshUser = cfg.ssh_user ? resolveEnvVars(cfg.ssh_user, envVars, bridgeVars) : undefined;
-        if (sshUser) {
-          this.ensureNoUnresolvedEnvPlaceholders(sshUser, name, "ssh_user");
-        }
-
-        const workingDir = cfg.working_dir ? resolveEnvVars(cfg.working_dir, envVars, bridgeVars) : undefined;
-        if (workingDir) {
-          this.ensureNoUnresolvedEnvPlaceholders(workingDir, name, "working_dir");
-        }
-
-        return new CommandToolExecutor({
-          commandTemplate: cfg.command_template,
-          host: sshTarget,
-          executor: this.containerExecutor, // Inject SSH executor
-          sshUser,
-          shell: cfg.shell,
-          workingDir,
-          defaultArgs: cfg.default_args,
-          disallowedCommands: cfg.disallowed_commands,
-          validationRules: cfg.validation_rules,
-          maxArgLength: cfg.max_arg_length,
-        });
+      if (type === "check") {
+        return CheckToolExecutor.create(
+          executorConfig as ExecutorConfig<CheckToolConfig>,
+        );
       }
 
       if (type === "mcp_server") {
-        const cfg = toolConfig as McpServerToolConfig;
-        if (!cfg.server_url) { log.error(`Tool ${name}: missing server_url`); return null; }
-
-        const envVars = {
-          ...(process.env as Record<string, string | undefined>),
-          DDEV_SSH_USER: process.env.DDEV_SSH_USER ?? this.config.sshUser,
-        };
-        const bridgeVars = { DDEV_PROJECT: this.config.ddevProject };
-
-        const authUsername = cfg.auth_username
-          ? resolveEnvVars(cfg.auth_username, envVars, bridgeVars)
-          : undefined;
-        if (authUsername) {
-          this.ensureNoUnresolvedEnvPlaceholders(authUsername, name, "auth_username");
-        }
-
-        const authPassword = cfg.auth_password
-          ? resolveEnvVars(cfg.auth_password, envVars, bridgeVars)
-          : undefined;
-        if (authPassword) {
-          this.ensureNoUnresolvedEnvPlaceholders(authPassword, name, "auth_password");
-        }
-
-        const authToken = cfg.auth_token
-          ? resolveEnvVars(cfg.auth_token, envVars, bridgeVars)
-          : undefined;
-        if (authToken) {
-          this.ensureNoUnresolvedEnvPlaceholders(authToken, name, "auth_token");
-        }
-
-        if ((cfg.auth_token && !cfg.auth_token.includes("${")) ||
-            (cfg.auth_password && !cfg.auth_password.includes("${"))) {
-          log.warn(`Tool ${name}: auth credentials appear to be literal values; prefer environment variable placeholders`);
-        }
-
-        return new McpProxyExecutor({
-          serverUrl: cfg.server_url,
-          forwardArgs: cfg.forward_args,
-          timeout: cfg.timeout,
-          authUsername,
-          authPassword,
-          authToken,
-          authTokenBasic: cfg.auth_token_basic,
-        });
+        return McpProxyExecutor.create(
+          executorConfig as ExecutorConfig<McpProxyToolConfig>,
+        );
       }
 
       if (type === "mcp_stdio") {
-        const cfg = toolConfig as McpStdioToolConfig;
-        if (!cfg.command) { log.error(`Tool ${name}: missing command`); return null; }
-
-        const envVars = {
-          ...(process.env as Record<string, string | undefined>),
-          DDEV_SSH_USER: process.env.DDEV_SSH_USER ?? this.config.sshUser,
-        };
-        const bridgeVars = { DDEV_PROJECT: this.config.ddevProject };
-
-        const sshTarget = cfg.ssh_target
-          ? resolveEnvVars(cfg.ssh_target, envVars, bridgeVars)
-          : undefined;
-        if (sshTarget) {
-          this.ensureNoUnresolvedEnvPlaceholders(sshTarget, name, "ssh_target");
-        }
-
-        const sshUser = cfg.ssh_user
-          ? resolveEnvVars(cfg.ssh_user, envVars, bridgeVars)
-          : undefined;
-        if (sshUser) {
-          this.ensureNoUnresolvedEnvPlaceholders(sshUser, name, "ssh_user");
-        }
-
-        const workingDir = cfg.working_dir
-          ? resolveEnvVars(cfg.working_dir, envVars, bridgeVars)
-          : undefined;
-        if (workingDir) {
-          this.ensureNoUnresolvedEnvPlaceholders(workingDir, name, "working_dir");
-        }
-
-        const executor = new McpStdioExecutor({
-          command: cfg.command,
-          sshTarget,
-          sshUser,
-          workingDir,
-          initTimeout: cfg.init_timeout,
-          timeout: cfg.timeout,
-          strictHostKeyChecking: this.config.strictHostKeyChecking,
-        });
-
+        const executor = McpStdioExecutor.create(
+          executorConfig as ExecutorConfig<McpStdioToolConfig>,
+        );
         this.stdioExecutors.push(executor);
         return executor;
       }
@@ -429,9 +390,15 @@ export class ToolRegistry {
 
   // --- Public API ---
 
-  getToolNames(): string[] { return [...this.tools.keys()]; }
-  getTool(name: string): RegisteredTool | undefined { return this.tools.get(name); }
-  getAllTools(): Map<string, RegisteredTool> { return this.tools; }
+  getToolNames(): string[] {
+    return [...this.tools.keys()];
+  }
+  getTool(name: string): RegisteredTool | undefined {
+    return this.tools.get(name);
+  }
+  getAllTools(): Map<string, RegisteredTool> {
+    return this.tools;
+  }
 
   /** Close all stdio executors (kills SSH subprocesses). */
   async close(): Promise<void> {
@@ -449,7 +416,10 @@ export class ToolRegistry {
    * Execute a tool. Applies arg preprocessing (path normalization)
    * then delegates to the executor. No special-casing needed.
    */
-  async executeTool(name: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
+  async executeTool(
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<ToolExecutionResult> {
     const log = getLogger();
     const registered = this.tools.get(name);
     if (!registered) {
@@ -463,10 +433,16 @@ export class ToolRegistry {
       log.debug(`Tool config type: ${config.type || "command"}`);
     }
 
+    // Merge args with defaults.
+    const mergedArgs: Args = {
+      ...(config.default_args ?? {}),
+      ...args,
+    };
+
     try {
-      executor.validateArguments(args);
+      executor.getValidator().validateToolExecution(mergedArgs);
       if (log.isVerbose()) {
-        log.debug(`Tool arguments validated: ${JSON.stringify(args)}`);
+        log.debug(`Tool arguments validated: ${JSON.stringify(mergedArgs)}`);
       }
     } catch (e) {
       const validationError = (e as Error).message;
@@ -475,22 +451,55 @@ export class ToolRegistry {
     }
 
     // Apply preprocessor (path normalization).
-    const processedArgs = this.argPreprocessor(args);
-    if (JSON.stringify(args) !== JSON.stringify(processedArgs)) {
+    const processedArgs = this.argPreprocessor(mergedArgs);
+    // @FIXME make this actually check if path normalization was applied
+    if (JSON.stringify(mergedArgs) !== JSON.stringify(processedArgs)) {
       if (log.isVerbose()) {
-        log.debug(`Path normalization applied: ${JSON.stringify(processedArgs)}`);
+        log.debug(
+          `Path normalization applied: ${JSON.stringify(processedArgs)}`,
+        );
       }
     }
 
+    const startTime = Date.now();
     try {
-      return await executor.execute(processedArgs);
-    } catch (e) {
-      const execError = (e as Error).message;
-      log.error(`Tool execution error: ${execError}`);
+      const result = await executor.execute(processedArgs);
+      const duration = Date.now() - startTime;
       if (log.isVerbose()) {
-        log.debug(`Tool that failed: ${name}, executor: ${executor.constructor.name}`);
+        log.debug(`Tool ${name} executed successfully in ${duration}ms`);
       }
-      return { content: `Error: ${execError}`, isError: true };
+      return result;
+    } catch (e) {
+      const duration = Date.now() - startTime;
+      const message = e instanceof Error ? e.message : e;
+
+      // If the executor has an isTimeout method, use it to determine if this
+      // was a timeout error.
+      if (executor.isTimeout?.(duration)) {
+        log.error(`Tool ${name} execution timeout: ${duration}ms: ${message}`);
+        if (log.isVerbose()) {
+          log.debug(
+            `Tool ${name} timed out with args: ${JSON.stringify(processedArgs)}`,
+          );
+        }
+        return {
+          content: `Tool ${name} timed out after ${duration}ms: ${message}`,
+          isTimeout: true,
+        };
+      }
+
+      // Handle as a regular execution error.
+      const execError = (e as Error).message;
+      log.error(`Tool execution error after ${duration}ms: ${execError}`);
+      if (log.isVerbose()) {
+        log.debug(
+          `Tool that failed: ${name}, executor: ${executor.constructor.name}`,
+        );
+      }
+      return {
+        content: `Error after ${duration}ms: ${execError}`,
+        isError: true,
+      };
     }
   }
 
@@ -518,16 +527,5 @@ export class ToolRegistry {
     };
 
     return normalize(value) as Record<string, unknown>;
-  }
-
-  private ensureNoUnresolvedEnvPlaceholders(value: string, toolName: string, fieldName: string): void {
-    const unresolved = [...value.matchAll(/\$\{(\w+)\}/g)].map((match) => match[1]);
-    if (unresolved.length === 0) {
-      return;
-    }
-
-    throw new Error(
-      `Tool ${toolName}: missing required environment variable(s) for ${fieldName}: ${unresolved.join(", ")}`,
-    );
   }
 }
