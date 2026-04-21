@@ -320,9 +320,6 @@ export const CommandToolExecutor: ToolExecutorStatic = class CommandToolExecutor
 
         if (log.isVerbose()) {
           log.debug(
-            `${this.type}: Success exit codes: ${this.successExitCodes.join(", ")}`,
-          );
-          log.debug(
             `${this.type}: Parsed error info from remote command: exit=${errorInfo.exit}, error=${errorInfo.error}`,
           );
         }
